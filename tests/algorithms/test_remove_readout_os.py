@@ -14,7 +14,8 @@
 
 import torch
 from einops import repeat
-from mrpro.algorithms import remove_readout_os
+
+from mrpro.algorithms.preprocess import remove_readout_os
 from mrpro.data import KData
 from mrpro.data import KTrajectory
 from mrpro.data import SpatialDimension

@@ -1,6 +1,8 @@
 import torch
-from mrpro.data import IData, KData
+
+from mrpro.data import IData
+from mrpro.data import KData
+
 
 class Reconstruction(torch.nn.Module):
-    def forward(self, kdata:KData) -> IData:
-       ...
+    def forward(self, kdata: KData) -> IData: ...

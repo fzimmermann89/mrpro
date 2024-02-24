@@ -19,8 +19,9 @@ import torch
 from torchkbnufft import KbNufft
 from torchkbnufft import KbNufftAdjoint
 
+from mrpro.data import KData
 from mrpro.data import KTrajectory
-from mrpro.data import SpatialDimension, KData
+from mrpro.data import SpatialDimension
 from mrpro.data.enums import TrajType
 from mrpro.operators import FastFourierOp
 from mrpro.operators import LinearOperator
@@ -28,6 +29,7 @@ from mrpro.operators import LinearOperator
 
 class FourierOp(LinearOperator):
     """Fourier Operator class."""
+
     def __init__(
         self,
         recon_shape: SpatialDimension[int],
@@ -128,7 +130,7 @@ class FourierOp(LinearOperator):
             self._kshape = traj.broadcasted_shape
 
     @classmethod
-    def from_kdata(cls, kdata:KData, recon_shape:SpatialDimension[int]|None) -> FourierOp:
+    def from_kdata(cls, kdata: KData, recon_shape: SpatialDimension[int] | None) -> FourierOp:
         """Create an instance of FourierOp from kdata with default settings.
 
         Parameters
@@ -143,6 +145,7 @@ class FourierOp(LinearOperator):
             encoding_shape=kdata.header.encoding_matrix,
             traj=kdata.traj,
         )
+
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor,]:
         """Forward operator mapping the coil-images to the coil k-space data.
 
