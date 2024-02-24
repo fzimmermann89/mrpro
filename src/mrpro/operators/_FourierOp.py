@@ -130,7 +130,7 @@ class FourierOp(LinearOperator):
             self._kshape = traj.broadcasted_shape
 
     @classmethod
-    def from_kdata(cls, kdata: KData, recon_shape: SpatialDimension[int] | None) -> FourierOp:
+    def from_kdata(cls, kdata: KData, recon_shape: SpatialDimension[int] | None = None) -> FourierOp:
         """Create an instance of FourierOp from kdata with default settings.
 
         Parameters
