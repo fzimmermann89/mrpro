@@ -35,6 +35,11 @@ def _volume(v: ArrayLike):
     return ConvexHull(v).volume
 
 
+def _volume2d(v):
+    # Shoelace equation for 2d
+    return np.abs(np.cross(v[:-1], v[1:]).sum(0) + np.cross(v[-1], v[0])) / 2
+
+
 @dataclasses.dataclass(slots=True, frozen=False)
 class DcfData:
     """Density compensation data (DcfData) class."""
@@ -121,15 +126,13 @@ class DcfData:
         vertices = [vdiagram.vertices[region] for region in regions]
 
         if dim == 2:
-            # Shoelace equation for 2d
-            dcf = np.array([np.abs(np.cross(v[:-1], v[1:]).sum(0) + np.cross(v[-1], v[0])) / 2 for v in vertices])
-
+            future = ProcessPoolExecutor(max_workers=torch.get_num_threads()).map(_volume2d, vertices, chunksize=200)
         else:
             # Calculate volume/area of voronoi cells using processes, as this is a very time-consuming operation
             # and ConvexHull is singlethreaded and does not seem to drop the GIL
             # TODO: this could maybe be made faster as the polyhedrons are known to be convex
-            future = ProcessPoolExecutor(max_workers=torch.get_num_threads()).map(_volume, vertices, chunksize=100)
-            dcf = np.array(list(future))
+            future = ProcessPoolExecutor(max_workers=torch.get_num_threads()).map(_volume, vertices, chunksize=200)
+        dcf = np.array(list(future))
 
         # Get outliers (i.e. voronoi cell which are unbound) and set them to a reasonable value
         # Outliers are defined as values larger than 1.5 * inter quartile range of the values
