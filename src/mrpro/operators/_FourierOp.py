@@ -11,16 +11,16 @@
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
+from __future__ import annotations
 
 from collections.abc import Sequence
-
 import numpy as np
 import torch
 from torchkbnufft import KbNufft
 from torchkbnufft import KbNufftAdjoint
 
 from mrpro.data import KTrajectory
-from mrpro.data import SpatialDimension
+from mrpro.data import SpatialDimension, KData
 from mrpro.data.enums import TrajType
 from mrpro.operators import FastFourierOp
 from mrpro.operators import LinearOperator
@@ -28,7 +28,6 @@ from mrpro.operators import LinearOperator
 
 class FourierOp(LinearOperator):
     """Fourier Operator class."""
-
     def __init__(
         self,
         recon_shape: SpatialDimension[int],
@@ -128,6 +127,22 @@ class FourierOp(LinearOperator):
 
             self._kshape = traj.broadcasted_shape
 
+    @classmethod
+    def from_kdata(cls, kdata:KData, recon_shape:SpatialDimension[int]|None) -> FourierOp:
+        """Create an instance of FourierOp from kdata with default settings.
+
+        Parameters
+        ----------
+        kdata
+            k-space data
+        recon_shape
+            dimension of the reconstructed image. Defaults to KData.header.recon_matrix
+        """
+        return cls(
+            recon_shape=kdata.header.recon_matrix if recon_shape is None else recon_shape,
+            encoding_shape=kdata.header.encoding_matrix,
+            traj=kdata.traj,
+        )
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor,]:
         """Forward operator mapping the coil-images to the coil k-space data.
 
