@@ -21,18 +21,12 @@ from mrpro.operators import LinearOperator
 class SensitivityOp(LinearOperator):
     """Sensitivity operator class."""
 
-    def __init__(self, csm: CsmData | torch.Tensor) -> None:
-        """Initialize a Sensitivity Operator.
+    def __init__(
+        self,
+        csm: CsmData,
+    ) -> None:
 
-        Parameters
-        ----------
-        csm
-           Coil Sensitivity Data
-        """
         super().__init__()
-        if isinstance(csm, CsmData):
-            # only tensors can be used as buffers
-            csm = csm.data
         self.register_buffer('csm', csm)
 
     def forward(self, img_data: torch.Tensor) -> tuple[torch.Tensor,]:
@@ -47,7 +41,7 @@ class SensitivityOp(LinearOperator):
         -------
             image data tensor with dimensions (other coils z y x).
         """
-        return (self.csm * img_data,)
+        return (self.csm.data * img_data,)
 
     def adjoint(self, img_data: torch.Tensor) -> tuple[torch.Tensor,]:
         """Apply the adjoint operator, thus reduce the coils dimension.
@@ -61,4 +55,5 @@ class SensitivityOp(LinearOperator):
         -------
             image data tensor with dimensions (other 1 z y x).
         """
-        return ((self.csm.conj() * img_data).sum(-4, keepdim=True),)
+
+        return ((self.csm.data.conj() * img_data).sum(-4, keepdim=True),)
