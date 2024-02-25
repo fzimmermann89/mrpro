@@ -1,2 +1,2 @@
-from ._reconstruction import Reconstruction
-from ._adjoint_reconstruction import AdjointReconstruction
+from mrpro.algorithms.reconstruction._reconstruction import Reconstruction
+from mrpro.algorithms.reconstruction._adjoint_reconstruction import AdjointReconstruction

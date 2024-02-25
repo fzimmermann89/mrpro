@@ -13,5 +13,5 @@ class Reconstruction(DataBufferMixin, torch.nn.Module, ABC):
 
     @abstractmethod
     def forward(self, kdata: KData) -> IData:
-        """Apply the reconstruction"""
+        """Apply the reconstruction."""
         pass
