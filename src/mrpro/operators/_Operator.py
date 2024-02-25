@@ -39,10 +39,10 @@ class Operator(Generic[*Tin, Tout], ABC, DataBufferMixin, torch.nn.Module):
         ...
 
     @overload
-    def __matmul__(self, other: Operator[*Tin2, tuple[*Tin]]) -> Operator[*Tin2, Tout]: ...
+    def __matmul__(self, other: Operator[*Tin2, tuple[*Tin]]) -> Operator[*Tin2, Tout]: ...  # noqa: D105
 
     @overload
-    def __matmul__(self, other: tuple[*Tin]) -> Tout: ...
+    def __matmul__(self, other: tuple[*Tin]) -> Tout: ...  # noqa: D105
 
     def __matmul__(self, other: Operator[*Tin2, tuple[*Tin]] | tuple[*Tin]) -> Operator[*Tin2, Tout] | Tout:
         """Operator composition."""

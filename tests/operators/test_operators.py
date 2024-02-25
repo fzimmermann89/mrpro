@@ -6,7 +6,6 @@ from mrpro.operators import Operator
 
 from tests.helper import dotproduct_adjointness_test
 
-
 class DummyOperator(Operator[torch.Tensor, torch.Tensor]):
     """Dummy operator for testing, raises input to the power of value."""
 
