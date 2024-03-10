@@ -1,6 +1,7 @@
 """"A pytorch implementation of scipy.spatial.transform.Rotation."""
 
-# Copyright (c) 2001-2002 Enthought, Inc. 2003-2024, SciPy Developers, 2024 P
+# based on Scipy implementation, which has the following copyright:
+# Copyright (c) 2001-2002 Enthought, Inc. 2003-2024, SciPy Developers
 
 # All rights reserved.
 
@@ -40,8 +41,13 @@ from collections.abc import Sequence
 import numpy as np
 import torch
 
+from mrpro.data import SpatialDimension
 
-def _compose_quat_single(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+AXIS_ORDER = ('x', 'y', 'z')
+QUAT_AXIS_ORDER = (*AXIS_ORDER, 'w')
+
+
+def _compose_quaternions_single(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
     """Calculate p * q."""
     cross = torch.cross(p[:3], q[:3])
     product = torch.stack(
@@ -56,42 +62,54 @@ def _compose_quat_single(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
     return product
 
 
-def _compose_quat(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
-    if p.shape != q.shape:
-        raise NotImplementedError('broadcasting not supported')
-    batch_dims = tuple(range(p.ndim - 1))
-    product = torch.vmap(_compose_quat_single, in_dims=(batch_dims, batch_dims), out_dims=batch_dims)
+def _compose_quaternions(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+    p, q = torch.broadcast_tensors(p, q)
+    product = torch.vmap(_compose_quaternions_single)(p.reshape(-1, 4), q.reshape(-1, 4)).reshape(p.shape)
     return product
 
 
-def _quat_canonical(q: torch.Tensor) -> torch.Tensor:
-    invert_mask = (q[..., 3] < 0) | (
-        (q[..., 3] == 0)
-        & ((q[..., 0] < 0) | ((q[..., 0] == 0) & ((q[..., 1] < 0) | ((q[..., 1] == 0) & (q[..., 2] < 0)))))
-    )
-    q = torch.where(invert_mask, -q, q)
+def _canonical_quaternion(q: torch.Tensor) -> torch.Tensor:
+    x, y, z, w = q.unbind(-1)
+    needs_inversion = (w < 0) | ((w == 0) & ((x < 0) | ((x == 0) & ((y < 0) | ((y == 0) & (z < 0))))))
+    q = torch.where(needs_inversion.unsqueeze(-1), -q, q)
     return q
 
 
 def _matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
-    d0 = matrix[0, 0]
-    d1 = matrix[1, 1]
-    d2 = matrix[2, 2]
-    trace = torch.trace(matrix)
+    if matrix.shape[-2:] != (3, 3):
+        raise ValueError(f'Invalid rotation matrix shape {matrix.shape}.')
+    batch_shape = matrix.shape[:-2]
+    m00, m01, m02, m10, m11, m12, m20, m21, m22 = torch.unbind(matrix.flatten(start_dim=-2), -1)
 
-    if (trace >= d0) & (trace >= d1) & (trace >= d2):
-        quaternion = torch.stack(
-            (matrix[2, 1] - matrix[1, 2], matrix[0, 2] - matrix[2, 0], matrix[1, 0] - matrix[0, 1], 1 + trace), -1
+    xyzw = torch.nn.functional.relu(
+        torch.stack(
+            [
+                1.0 + m00 - m11 - m22,
+                1.0 - m00 + m11 - m22,
+                1.0 - m00 - m11 + m22,
+                1.0 + m00 + m11 + m22,
+            ],
+            dim=-1,
         )
-    else:
-        i = torch.argmax((d0, d1, d2))
-        j = (i + 1) % 3
-        k = (j + 1) % 3
-        quaternion = torch.empty(4)
-        quaternion[i] = 1 - trace + 2 * matrix[i, i]
-        quaternion[j] = matrix[j, i] + matrix[i, j]
-        quaternion[k] = matrix[k, i] + matrix[i, k]
-        quaternion[3] = matrix[k, j] - matrix[j, k]
+    )
+    x, y, z, w = xyzw.unbind(-1)
+
+    candidates = torch.stack(
+        (
+            *(x, m10 + m01, m02 + m20, m21 - m12),
+            *(m10 + m01, y, m12 + m21, m02 - m20),
+            *(m20 + m02, m21 + m12, z, m10 - m01),
+            *(m21 - m12, m02 - m20, m10 - m01, w),
+        ),
+        dim=-1,
+    ).reshape(*batch_shape, 4, 4)
+
+    # the choice will not influence the gradients.
+    choice = xyzw.argmax(dim=-1)
+    # quaternion = (candidates[...,choice]/(2*xyzw[...,choice].sqrt())).squeeze(-1)
+    quaternion = candidates.take_along_dim(choice[..., None, None], -2).squeeze(-2) / (
+        xyzw.take_along_dim(choice[..., None], -1).sqrt() * 2
+    )
     return quaternion
 
 
@@ -109,19 +127,14 @@ def _quaternion_to_matrix(quaternion: torch.Tensor) -> torch.Tensor:
     yz = y * z
     xw = x * w
 
-    matrix = torch.empty(*quaternion.shape[:-1], 3, 3)
-
-    matrix[..., 0, 0] = xx - yy - zz + ww
-    matrix[..., 1, 0] = 2 * (xy + zw)
-    matrix[..., 2, 0] = 2 * (xz - yw)
-
-    matrix[..., 0, 1] = 2 * (xy - zw)
-    matrix[..., 1, 1] = -xx + yy - zz + ww
-    matrix[..., 2, 1] = 2 * (yz + xw)
-
-    matrix[..., 0, 2] = 2 * (xz + yw)
-    matrix[..., 1, 2] = 2 * (yz - xw)
-    matrix[..., 2, 2] = -xx - yy + zz + ww
+    matrix = torch.stack(
+        (
+            *(xx - yy - zz + ww, 2 * (xy - zw), 2 * (xz + yw)),
+            *(2 * (xy + zw), -xx + yy - zz + ww, 2 * (yz - xw)),
+            *(2 * (xz - yw), 2 * (yz + xw), -xx - yy + zz + ww),
+        ),
+        dim=-1,
+    ).reshape(*quaternion.shape[:-1], 3, 3)
     return matrix
 
 
@@ -138,6 +151,11 @@ class Rotation(torch.nn.Module):
     def __init__(self, quaternions: torch.Tensor, normalize: bool = True, copy: bool = True):
         super().__init__()
 
+        if torch.is_complex(quaternions):
+            raise ValueError('quaternions should be real numbers')
+        if not torch.is_floating_point(quaternions):
+            # integer or boolean dtypes
+            quaternions = quaternions.float()
         if quaternions.shape[-1] != 4:
             raise ValueError('Expected `quaternions` to have shape (..., 4), ' f'got {quaternions.shape}.')
 
@@ -151,8 +169,8 @@ class Rotation(torch.nn.Module):
             self._single = False
 
         if normalize:
-            norms = torch.linalg.norm(quaternions, dim=-1)
-            if torch.any(torch.isclose(norms, torch.tensor(0.0))):
+            norms = torch.linalg.vector_norm(quaternions, dim=-1, keepdim=True)
+            if torch.any(torch.isclose(norms.float(), torch.tensor(0.0))):
                 raise ValueError('Found zero norm quaternion in `quaternions`.')
             quaternions = quaternions / norms
         elif copy:
@@ -217,9 +235,7 @@ class Rotation(torch.nn.Module):
         """
         if matrix.shape[-2:] != (3, 3):
             raise ValueError(f'Expected `matrix` to have shape (..., 3, 3), got {matrix.shape}')
-
-        batch_dims = tuple(range(matrix.ndim - 2))
-        quaternions = torch.vmap(_matrix_to_quaternion, in_dims=batch_dims, out_dims=batch_dims)
+        quaternions = _matrix_to_quaternion(matrix)
 
         return cls(quaternions, normalize=True, copy=False)
 
@@ -230,7 +246,7 @@ class Rotation(torch.nn.Module):
 
         if rotvec.shape[-1] != 3:
             raise ValueError('Expected `rot_vec` to have shape (..., 3), got {rotvec.shape}')
-        angles = torch.linalg.norm(rotvec, dim=-1)
+        angles = torch.linalg.vector_norm(rotvec, dim=-1, keepdim=True)
         scales = torch.special.sinc(angles / (2 * torch.pi)) / 2
         quaternions = torch.cat((scales * rotvec[..., :-1], torch.cos(angles / 2)), -1)
         return cls(quaternions, normalize=False, copy=False)
@@ -312,7 +328,7 @@ class Rotation(torch.nn.Module):
         """
         quaternions: torch.Tensor = self._quaternions
         if canonical:
-            quaternions = _quat_canonical(quaternions)
+            quaternions = _canonical_quaternion(quaternions)
         if self.single:
             quaternions = quaternions[0]
         return quaternions
@@ -361,12 +377,12 @@ class Rotation(torch.nn.Module):
         .. [1] https://en.wikipedia.org/wiki/Axis%E2%80%93angle_representation#Rotation_vector
         """
         quaternions: torch.Tensor = self._quaternions
-        quaternions = _quat_canonical(quaternions)  # w > 0 ensures that 0 <= angle <= pi
+        quaternions = _canonical_quaternion(quaternions)  # w > 0 ensures that 0 <= angle <= pi
 
-        angles = 2 * torch.atan2(torch.linalg.norm(quaternions, dim=-1), quaternions[..., 3])
+        angles = 2 * torch.atan2(torch.linalg.vector_norm(quaternions, dim=-1), quaternions[..., 3])
         scales = 2 / (torch.special.sinc(angles / (2 * torch.pi)))
 
-        rotvec = scales * quaternions[..., :3]
+        rotvec = scales[..., None] * quaternions[..., :3]
 
         if degrees:
             rotvec = torch.rad2deg(rotvec)
@@ -389,7 +405,11 @@ class Rotation(torch.nn.Module):
     def concatenate(cls, rotations: Sequence[Rotation]) -> Rotation:
         raise NotImplementedError
 
-    def forward(self, vectors: torch.Tensor, inverse: bool = False) -> torch.Tensor:
+    def forward(
+        self,
+        vectors: Sequence[float] | torch.Tensor | SpatialDimension[torch.Tensor] | SpatialDimension[float],
+        inverse: bool = False,
+    ) -> torch.Tensor | SpatialDimension[torch.Tensor] | tuple[float, float, float]:
         """Apply this rotation to a set of vectors.
 
         If the original frame rotates to the final frame by this rotation, then
@@ -426,24 +446,40 @@ class Rotation(torch.nn.Module):
                 - In all other cases, `rotated_vectors` has shape ``(..., 3)``,
                   where ``...`` is determined by broadcasting.
         """
-        if vectors.shape[-1] != 3:
-            raise ValueError(f'Expected input of shape (..., 3), got {vectors.shape}.')
-
+        if input_is_spatialdimension := isinstance(vectors, SpatialDimension):
+            vectors_tensor = torch.stack([torch.as_tensor(getattr(vectors, axis)) for axis in AXIS_ORDER], -1)
+        elif input_is_sequence := isinstance(vectors, Sequence):
+            vectors_tensor = torch.as_tensor(vectors)
+        else:
+            vectors_tensor = vectors
+        if vectors_tensor.shape[-1] != 3:
+            raise ValueError(f'Expected input of shape (..., 3), got {vectors_tensor.shape}.')
         matrix = self.as_matrix()
         if inverse:
             matrix = matrix.mT
         try:
-            result = (matrix @ vectors.unsqueeze(-1)).squeeze(-1)
+            result = (matrix @ vectors_tensor.unsqueeze(-1)).squeeze(-1)
         except RuntimeError:
             raise ValueError(
                 f'The batch-shape of the rotation, {matrix.shape[:-2]},'
-                f'is not compatible with the input batch shape {vectors.shape[:-1]}'
+                f'is not compatible with the input batch shape {vectors_tensor.shape[:-1]}'
             ) from None
 
-        if self._single and vectors.shape == (3,):
+        if self._single and vectors_tensor.shape == (3,):
             result = result[0]
 
-        return result
+        if input_is_spatialdimension:
+            return SpatialDimension(
+                x=result[..., AXIS_ORDER.index('x')],
+                y=result[..., AXIS_ORDER.index('y')],
+                z=result[..., AXIS_ORDER.index('z')],
+            )
+
+        elif input_is_sequence:
+            return tuple(result)
+
+        else:
+            return result
 
     def __mul__(self, other: Rotation) -> Rotation:
         """For compatibility with sp.spatial.transform.Rotation."""
@@ -483,7 +519,7 @@ class Rotation(torch.nn.Module):
         p = self._quaternions
         q = other._quaternions
         # TODO: broadcasting
-        result = _compose_quat(p, q)
+        result = _compose_quaternions(p, q)
         if self._single and other._single:
             result = result[0]
         return self.__class__(result, normalize=True, copy=False)
@@ -572,7 +608,7 @@ class Rotation(torch.nn.Module):
             Angles in radians. The magnitude will always be in the range [0, pi].
         """
         angles = 2 * torch.atan2(
-            torch.linalg.norm(self._quaternions[..., :3], dim=-1), torch.abs(self._quaternions[..., 3])
+            torch.linalg.vector_norm(self._quaternions[..., :3], dim=-1), torch.abs(self._quaternions[..., 3])
         )
         if self._single:
             angles = angles[0]
@@ -630,6 +666,54 @@ class Rotation(torch.nn.Module):
             raise TypeError('Single rotation is not subscriptable.')
 
         return self.__class__(self._quaternions[indexer, :], normalize=False)
+
+    @property
+    def quaternion_x(self) -> torch.Tensor:
+        """Get x component of the quaternion."""
+        axis = AXIS_ORDER.index('x')
+        return self._quaternions[..., axis]
+
+    @quaternion_x.setter
+    def quaternion_x(self, quat_x: torch.Tensor):
+        """Set x component of the quaternion."""
+        axis = AXIS_ORDER.index('x')
+        self._quaternions[..., axis] = quat_x
+
+    @property
+    def quaternion_y(self) -> torch.Tensor:
+        """Get y component of the quaternion."""
+        axis = AXIS_ORDER.index('y')
+        return self._quaternions[..., axis]
+
+    @quaternion_y.setter
+    def quaternion_y(self, quat_y: torch.Tensor):
+        """Set y component of the quaternion."""
+        axis = AXIS_ORDER.index('y')
+        self._quaternions[..., axis] = quat_y
+
+    @property
+    def quaternion_z(self) -> torch.Tensor:
+        """Get z component of the quaternion."""
+        axis = AXIS_ORDER.index('z')
+        return self._quaternions[..., axis]
+
+    @quaternion_z.setter
+    def quaternion_z(self, quat_z: torch.Tensor):
+        """Set z component of the quaternion."""
+        axis = AXIS_ORDER.index('z')
+        self._quaternions[..., axis] = quat_z
+
+    @property
+    def quaternion_w(self) -> torch.Tensor:
+        """Get w component of the quaternion."""
+        axis = AXIS_ORDER.index('w')
+        return self._quaternions[..., axis]
+
+    @quaternion_w.setter
+    def quaternion_w(self, quat_w: torch.Tensor):
+        """Set w component of the quaternion."""
+        axis = AXIS_ORDER.index('w')
+        self._quaternions[..., axis] = quat_w
 
     def __setitem__(self, indexer: int | slice | torch.Tensor, value: Rotation):
         """Set rotation(s) at given index(es) from object.
