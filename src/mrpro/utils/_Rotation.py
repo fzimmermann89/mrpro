@@ -40,16 +40,17 @@ from collections.abc import Sequence
 
 import numpy as np
 import torch
-
+import re
 from mrpro.data import SpatialDimension
 
 AXIS_ORDER = ('x', 'y', 'z')
 QUAT_AXIS_ORDER = (*AXIS_ORDER, 'w')
 
 
+
 def _compose_quaternions_single(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
     """Calculate p * q."""
-    cross = torch.cross(p[:3], q[:3])
+    cross = torch.linalg.cross(p[:3], q[:3])
     product = torch.stack(
         (
             p[3] * q[0] + q[3] * p[0] + cross[0],
@@ -111,6 +112,16 @@ def _matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
         xyzw.take_along_dim(choice[..., None], -1).sqrt() * 2
     )
     return quaternion
+
+
+def _make_elementary_quat(axis:str, angles:torch.Tensor):
+    quat = torch.zeros(*angles.shape,4,device=angles.device,dtype=angles.dtype)
+    axis_index = QUAT_AXIS_ORDER.index(axis)
+    w_index =QUAT_AXIS_ORDER.index("w")
+    quat[..., w_index] = torch.cos(angles/ 2)
+    quat[..., axis_index] = torch.sin(angles / 2)
+    return quat
+
 
 
 def _quaternion_to_matrix(quaternion: torch.Tensor) -> torch.Tensor:
@@ -178,12 +189,12 @@ class Rotation(torch.nn.Module):
         self.register_buffer('_quaternions', quaternions)
 
     @property
-    def single(self):
+    def single(self)->bool:
         """Returns true if this a single rotation."""
         return self._single
 
     @classmethod
-    def from_quat(cls, quaternions: torch.Tensor) -> Rotation:
+    def from_quat(cls, quaternions: torch.Tensor|Sequence[float]) -> Rotation:
         """Initialize from quaternions.
 
         3D rotations can be represented using unit-norm quaternions [1]_.
@@ -205,6 +216,8 @@ class Rotation(torch.nn.Module):
         ----------
         .. [1] https://en.wikipedia.org/wiki/Quaternions_and_spatial_rotation
         """
+        if not isinstance(quaternions, torch.Tensor):
+            quaternions = torch.as_tensor(quaternions)
         return cls(quaternions, normalize=True)
 
     @classmethod
@@ -233,26 +246,41 @@ class Rotation(torch.nn.Module):
                Journal of guidance, control, and dynamics vol. 31.2, pp.
                440-442, 2008.
         """
+        if not isinstance(matrix, torch.Tensor):
+            matrix = torch.as_tensor(matrix)
         if matrix.shape[-2:] != (3, 3):
             raise ValueError(f'Expected `matrix` to have shape (..., 3, 3), got {matrix.shape}')
+        if torch.is_complex(matrix):
+            raise ValueError('matrix should be real, not complex.')
+        if not torch.is_floating_point(matrix):
+            # integer or boolean dtypes
+            matrix = matrix.float()
         quaternions = _matrix_to_quaternion(matrix)
 
         return cls(quaternions, normalize=True, copy=False)
 
     @classmethod
-    def from_rotvec(cls, rotvec: torch.Tensor, degrees: bool = False) -> Rotation:
+    def from_rotvec(cls, rotvec: torch.Tensor|Sequence[float], degrees: bool = False) -> Rotation:
+        if not isinstance(rotvec, torch.Tensor):
+            rotvec = torch.as_tensor(rotvec)
+        if torch.is_complex(rotvec):
+            raise ValueError('rotvec should be real numbers')
+        if not torch.is_floating_point(rotvec):
+            # integer or boolean dtypes
+            rotvec = rotvec.float()
         if degrees:
             rotvec = torch.deg2rad(rotvec)
 
         if rotvec.shape[-1] != 3:
             raise ValueError('Expected `rot_vec` to have shape (..., 3), got {rotvec.shape}')
+
         angles = torch.linalg.vector_norm(rotvec, dim=-1, keepdim=True)
         scales = torch.special.sinc(angles / (2 * torch.pi)) / 2
-        quaternions = torch.cat((scales * rotvec[..., :-1], torch.cos(angles / 2)), -1)
+        quaternions = torch.cat((scales * rotvec, torch.cos(angles / 2)), -1)
         return cls(quaternions, normalize=False, copy=False)
 
     @classmethod
-    def from_euler(cls, seq: str, angles: torch.Tensor, degrees: bool = False) -> Rotation:
+    def from_euler(cls, seq: str, angles: torch.Tensor|Sequence[float], degrees: bool = False) -> Rotation:
         """Initialize from Euler angles.
 
         Rotations in 3-D can be represented by a sequence of 3
@@ -289,7 +317,50 @@ class Rotation(torch.nn.Module):
         ----------
         .. [1] https://en.wikipedia.org/wiki/Euler_angles#Definition_by_intrinsic_rotations
         """
-        raise NotImplementedError
+        n_axes = len(seq)
+        if n_axes < 1 or n_axes > 3:
+            raise ValueError("Expected axis specification to be a non-empty "
+                             f"string of upto 3 characters, got {seq}")
+
+        intrinsic = (re.match(r'^[XYZ]{1,3}$', seq) is not None)
+        extrinsic = (re.match(r'^[xyz]{1,3}$', seq) is not None)
+        if not (intrinsic or extrinsic):
+            raise ValueError("Expected axes from `seq` to be from ['x', 'y', "
+                             f"'z'] or ['X', 'Y', 'Z'], got {seq}")
+
+        if any(seq[i] == seq[i+1] for i in range(n_axes - 1)):
+            raise ValueError("Expected consecutive axes to be different, "
+                             f"got {seq}")
+        seq = seq.lower()
+
+        angles = torch.as_tensor(angles)
+        if degrees:
+            angles = torch.deg2rad(angles)
+        if n_axes == 1 and angles.ndim == 0:
+                angles = angles.reshape((1, 1))
+                is_single = True
+        elif angles.ndim == 1:
+                angles = angles[None, :]
+                is_single = True
+        else:
+            is_single = False
+        if angles.ndim < 2 or angles.shape[-1] != n_axes:
+            raise ValueError("Expected angles to have shape (..., "
+                            f"n_axes), got {angles.shape}.")
+
+        quaternions = _make_elementary_quat(seq[0], angles[...,0])
+        for axis, angle in zip(seq[1:],angles[...,1:].unbind(-1)):
+            if intrinsic:
+                quaternions = _compose_quaternions(quaternions, _make_elementary_quat(axis, angle))
+            else:
+                quaternions = _compose_quaternions(_make_elementary_quat(axis, angle),quaternions)
+
+        if is_single:
+            return cls(quaternions[0], normalize=False, copy=False)
+        else:
+            return cls(quaternions, normalize=False, copy=False)
+
+
 
     @classmethod
     def from_davenport(cls, axes: torch.Tensor, order: str, angles: torch.Tensor, degrees: bool = False):
