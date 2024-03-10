@@ -35,17 +35,17 @@
 
 from __future__ import annotations
 
+import re
 import warnings
 from collections.abc import Sequence
 
 import numpy as np
 import torch
-import re
+
 from mrpro.data import SpatialDimension
 
 AXIS_ORDER = ('x', 'y', 'z')
 QUAT_AXIS_ORDER = (*AXIS_ORDER, 'w')
-
 
 
 def _compose_quaternions_single(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
@@ -114,14 +114,13 @@ def _matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
     return quaternion
 
 
-def _make_elementary_quat(axis:str, angles:torch.Tensor):
-    quat = torch.zeros(*angles.shape,4,device=angles.device,dtype=angles.dtype)
+def _make_elementary_quat(axis: str, angles: torch.Tensor):
+    quat = torch.zeros(*angles.shape, 4, device=angles.device, dtype=angles.dtype)
     axis_index = QUAT_AXIS_ORDER.index(axis)
-    w_index =QUAT_AXIS_ORDER.index("w")
-    quat[..., w_index] = torch.cos(angles/ 2)
+    w_index = QUAT_AXIS_ORDER.index('w')
+    quat[..., w_index] = torch.cos(angles / 2)
     quat[..., axis_index] = torch.sin(angles / 2)
     return quat
-
 
 
 def _quaternion_to_matrix(quaternion: torch.Tensor) -> torch.Tensor:
@@ -189,12 +188,12 @@ class Rotation(torch.nn.Module):
         self.register_buffer('_quaternions', quaternions)
 
     @property
-    def single(self)->bool:
+    def single(self) -> bool:
         """Returns true if this a single rotation."""
         return self._single
 
     @classmethod
-    def from_quat(cls, quaternions: torch.Tensor|Sequence[float]) -> Rotation:
+    def from_quat(cls, quaternions: torch.Tensor | Sequence[float]) -> Rotation:
         """Initialize from quaternions.
 
         3D rotations can be represented using unit-norm quaternions [1]_.
@@ -247,7 +246,8 @@ class Rotation(torch.nn.Module):
                440-442, 2008.
         """
         if not isinstance(matrix, torch.Tensor):
-            matrix = torch.as_tensor(matrix)
+            # this should not happen if following type hints, but we are defensive
+            matrix = torch.as_tensor(matrix)  # type: ignore[unreachable]
         if matrix.shape[-2:] != (3, 3):
             raise ValueError(f'Expected `matrix` to have shape (..., 3, 3), got {matrix.shape}')
         if torch.is_complex(matrix):
@@ -260,7 +260,7 @@ class Rotation(torch.nn.Module):
         return cls(quaternions, normalize=True, copy=False)
 
     @classmethod
-    def from_rotvec(cls, rotvec: torch.Tensor|Sequence[float], degrees: bool = False) -> Rotation:
+    def from_rotvec(cls, rotvec: torch.Tensor | Sequence[float], degrees: bool = False) -> Rotation:
         if not isinstance(rotvec, torch.Tensor):
             rotvec = torch.as_tensor(rotvec)
         if torch.is_complex(rotvec):
@@ -280,7 +280,7 @@ class Rotation(torch.nn.Module):
         return cls(quaternions, normalize=False, copy=False)
 
     @classmethod
-    def from_euler(cls, seq: str, angles: torch.Tensor|Sequence[float], degrees: bool = False) -> Rotation:
+    def from_euler(cls, seq: str, angles: torch.Tensor | Sequence[float], degrees: bool = False) -> Rotation:
         """Initialize from Euler angles.
 
         Rotations in 3-D can be represented by a sequence of 3
@@ -319,48 +319,42 @@ class Rotation(torch.nn.Module):
         """
         n_axes = len(seq)
         if n_axes < 1 or n_axes > 3:
-            raise ValueError("Expected axis specification to be a non-empty "
-                             f"string of upto 3 characters, got {seq}")
+            raise ValueError('Expected axis specification to be a non-empty ' f'string of upto 3 characters, got {seq}')
 
-        intrinsic = (re.match(r'^[XYZ]{1,3}$', seq) is not None)
-        extrinsic = (re.match(r'^[xyz]{1,3}$', seq) is not None)
+        intrinsic = re.match(r'^[XYZ]{1,3}$', seq) is not None
+        extrinsic = re.match(r'^[xyz]{1,3}$', seq) is not None
         if not (intrinsic or extrinsic):
-            raise ValueError("Expected axes from `seq` to be from ['x', 'y', "
-                             f"'z'] or ['X', 'Y', 'Z'], got {seq}")
+            raise ValueError("Expected axes from `seq` to be from ['x', 'y', " f"'z'] or ['X', 'Y', 'Z'], got {seq}")
 
-        if any(seq[i] == seq[i+1] for i in range(n_axes - 1)):
-            raise ValueError("Expected consecutive axes to be different, "
-                             f"got {seq}")
+        if any(seq[i] == seq[i + 1] for i in range(n_axes - 1)):
+            raise ValueError('Expected consecutive axes to be different, ' f'got {seq}')
         seq = seq.lower()
 
         angles = torch.as_tensor(angles)
         if degrees:
             angles = torch.deg2rad(angles)
         if n_axes == 1 and angles.ndim == 0:
-                angles = angles.reshape((1, 1))
-                is_single = True
+            angles = angles.reshape((1, 1))
+            is_single = True
         elif angles.ndim == 1:
-                angles = angles[None, :]
-                is_single = True
+            angles = angles[None, :]
+            is_single = True
         else:
             is_single = False
         if angles.ndim < 2 or angles.shape[-1] != n_axes:
-            raise ValueError("Expected angles to have shape (..., "
-                            f"n_axes), got {angles.shape}.")
+            raise ValueError('Expected angles to have shape (..., ' f'n_axes), got {angles.shape}.')
 
-        quaternions = _make_elementary_quat(seq[0], angles[...,0])
-        for axis, angle in zip(seq[1:],angles[...,1:].unbind(-1)):
+        quaternions = _make_elementary_quat(seq[0], angles[..., 0])
+        for axis, angle in zip(seq[1:], angles[..., 1:].unbind(-1), strict=False):
             if intrinsic:
                 quaternions = _compose_quaternions(quaternions, _make_elementary_quat(axis, angle))
             else:
-                quaternions = _compose_quaternions(_make_elementary_quat(axis, angle),quaternions)
+                quaternions = _compose_quaternions(_make_elementary_quat(axis, angle), quaternions)
 
         if is_single:
             return cls(quaternions[0], normalize=False, copy=False)
         else:
             return cls(quaternions, normalize=False, copy=False)
-
-
 
     @classmethod
     def from_davenport(cls, axes: torch.Tensor, order: str, angles: torch.Tensor, degrees: bool = False):
