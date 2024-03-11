@@ -221,7 +221,7 @@ class Rotation(torch.nn.Module):
     Differences compared to scipy.spatial.transform.Rotation:
     - torch.nn.Module based, the quaternions are a Parameter
     - .apply is replaced by call/forward.
-    - not all features are implemented. Notably, mrp, davenport, mean and reduce are missing.
+    - not all features are implemented. Notably, mrp, davenport and reduce are missing.
     - arbitrary number of batching dimensions
     """
 
