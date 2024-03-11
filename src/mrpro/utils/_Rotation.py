@@ -225,7 +225,8 @@ class Rotation(torch.nn.Module):
 
     def __init__(self, quaternions: torch.Tensor, normalize: bool = True, copy: bool = True):
         super().__init__()
-
+        if not isinstance(quaternions,torch.Tensor):
+            quaternions=torch.as_tensor(quaternions) # type: ignore[unreachable]
         if torch.is_complex(quaternions):
             raise ValueError('quaternions should be real numbers')
         if not torch.is_floating_point(quaternions):
@@ -576,7 +577,7 @@ class Rotation(torch.nn.Module):
         self,
         vectors: Sequence[float] | torch.Tensor | SpatialDimension[torch.Tensor] | SpatialDimension[float],
         inverse: bool = False,
-    ) -> torch.Tensor | SpatialDimension[torch.Tensor] | tuple[float, float, float]:
+    ) -> torch.Tensor | SpatialDimension[torch.Tensor]:
         """Apply this rotation to a set of vectors.
 
         If the original frame rotates to the final frame by this rotation, then
@@ -614,26 +615,33 @@ class Rotation(torch.nn.Module):
                   where ``...`` is determined by broadcasting.
         """
         if input_is_spatialdimension := isinstance(vectors, SpatialDimension):
+            # sort the axis by AXIS_ORDER
             vectors_tensor = torch.stack([torch.as_tensor(getattr(vectors, axis)) for axis in AXIS_ORDER], -1)
-        elif input_is_sequence := isinstance(vectors, Sequence):
-            vectors_tensor = torch.as_tensor(vectors)
         else:
-            vectors_tensor = vectors
+            vectors_tensor = torch.as_tensor(vectors)
+
         if vectors_tensor.shape[-1] != 3:
             raise ValueError(f'Expected input of shape (..., 3), got {vectors_tensor.shape}.')
+        if vectors_tensor.is_complex():
+            raise ValueError('Complex vectors are not supported. The coordinates to rotate should be real numbers.')
+        elif not vectors_tensor.is_floating_point():
+            # int or boolean dtypes
+            vectors_tensor = vectors_tensor.float()
         matrix = self.as_matrix()
         if inverse:
             matrix = matrix.mT
+
         try:
             result = (matrix @ vectors_tensor.unsqueeze(-1)).squeeze(-1)
         except RuntimeError:
             raise ValueError(
-                f'The batch-shape of the rotation, {matrix.shape[:-2]},'
-                f'is not compatible with the input batch shape {vectors_tensor.shape[:-1]}'
+                f'The batch-shape of the rotation, {list(matrix.shape[:-2])}, '
+                f'is not compatible with the input batch shape {list(vectors_tensor.shape[:-1])}'
             ) from None
 
-        if self._single and vectors_tensor.shape == (3,):
-            result = result[0]
+        # if self._single and vectors_tensor.shape == (3,):
+        #     # a single rotation and a single vector
+        #     result = result[0]
 
         if input_is_spatialdimension:
             return SpatialDimension(
@@ -641,10 +649,6 @@ class Rotation(torch.nn.Module):
                 y=result[..., AXIS_ORDER.index('y')],
                 z=result[..., AXIS_ORDER.index('z')],
             )
-
-        elif input_is_sequence:
-            return tuple(result)
-
         else:
             return result
 
@@ -985,3 +989,21 @@ class Rotation(torch.nn.Module):
         quat_np = rotation_sp.as_quat()
         quat = torch.as_tensor(quat_np, device=a.device, dtype=a.dtype)
         return (cls(quat), *other)
+
+    @property
+    def shape(self) -> torch.Size:
+        """Return the batch shape of the Rotation."""
+        return self._quaternions.shape[:-1]
+
+    def __bool__(self):
+        """Comply with Python convention for objects to be True.
+
+        Required because `Rotation.__len__()` is defined and not always truthy.
+        """
+        return True
+
+    def __len__(self) -> int:
+        """Return the leading dimensions size of the batched Rotation."""
+        if self._single:
+            raise TypeError('Single rotation has no len().')
+        return self.shape[0]
