@@ -41,6 +41,8 @@ from collections.abc import Sequence
 
 import numpy as np
 import torch
+from scipy._lib._util import check_random_state
+from scipy.spatial.transform import Rotation as Rotation_scipy
 
 from mrpro.data import SpatialDimension
 
@@ -146,6 +148,69 @@ def _quaternion_to_matrix(quaternion: torch.Tensor) -> torch.Tensor:
         dim=-1,
     ).reshape(*quaternion.shape[:-1], 3, 3)
     return matrix
+
+
+def _quaternion_to_euler(quat: torch.Tensor, seq: str, extrinsic: bool):
+    # The algorithm assumes extrinsic frame transformations. The algorithm
+    # in the paper is formulated for rotation quaternions, which are stored
+    # directly by Rotation.
+    # Adapt the algorithm for our case by reversing both axis sequence and
+    # angles for intrinsic rotations when needed
+
+    if not extrinsic:
+        seq = seq[::-1]
+
+    i, j, k = (QUAT_AXIS_ORDER.index(s) for s in seq)
+    w = QUAT_AXIS_ORDER.index('w')
+
+    if symmetric := i == k:
+        k = 3 - i - j  # get third axis
+
+    # Step 0
+    # Check if permutation is even (+1) or odd (-1)
+    sign = (i - j) * (j - k) * (k - i) // 2
+
+    if symmetric:
+        a = quat[..., w]
+        b = quat[..., i]
+        c = quat[..., j]
+        d = quat[..., k] * sign
+    else:
+        a = quat[..., w] - quat[..., j]
+        b = quat[..., i] + quat[..., k] * sign
+        c = quat[..., j] + quat[..., w]
+        d = quat[..., k] * sign - quat[..., i]
+
+    # Step 2
+    # Compute second angle...
+    angles_1 = 2 * torch.atan2(torch.hypot(c, d), torch.hypot(a, b))
+
+    # Step 3
+    # compute first and third angles
+    half_sum = torch.atan2(b, a)
+    half_diff = torch.atan2(d, c)
+
+    angles_0 = half_sum - half_diff
+    angles_2 = half_sum + half_diff
+
+    # and check if angles_1 is equal to is 0 (case=1) or pi (case=2), causing a singularity,
+    # i.e. a gimble lock. case=0 is the normal.
+    case = 1 * (torch.abs(angles_1) <= 1e-7) + 2 * (torch.abs(angles_1 - torch.pi) <= 1e-7)
+    angles_0 = (case == 0) * angles_2
+    angles_0 = (
+        (case == 0) * angles_0 + (case == 1) * 2 * half_sum + (case == 2) * 2 * half_diff * (-1 if extrinsic else 1)
+    )
+
+    if not symmetric:
+        angles_2 *= sign
+        angles_1 -= torch.pi / 2
+    if not extrinsic:
+        angles_2, angles_0 = angles_0, angles_2
+
+    angles = torch.stack((angles_0, angles_1, angles_2), -1)
+    angles += (angles < -torch.pi) * 2 * torch.pi
+    angles -= (angles > torch.pi) * 2 * torch.pi
+    return angles
 
 
 class Rotation(torch.nn.Module):
@@ -458,7 +523,28 @@ class Rotation(torch.nn.Module):
         return rotvec
 
     def as_euler(self, seq: str, degrees: bool = False) -> torch.Tensor:
-        raise NotImplementedError
+        if len(seq) != 3:
+            raise ValueError(f'Expected 3 axes, got {seq}.')
+
+        intrinsic = re.match(r'^[XYZ]{1,3}$', seq) is not None
+        extrinsic = re.match(r'^[xyz]{1,3}$', seq) is not None
+        if not (intrinsic or extrinsic):
+            raise ValueError('Expected axes from `seq` to be from ' "['x', 'y', 'z'] or ['X', 'Y', 'Z'], " f'got {seq}')
+
+        if any(seq[i] == seq[i + 1] for i in range(2)):
+            raise ValueError('Expected consecutive axes to be different, ' f'got {seq}')
+
+        seq = seq.lower()
+
+        quat = self.as_quat()
+        if quat.ndim == 1:
+            quat = quat[None, :]
+
+        angles = _quaternion_to_euler(quat, seq, extrinsic)
+        if degrees:
+            angles = torch.rad2deg(angles)
+
+        return angles[0] if self._single else angles
 
     def as_davenport(self, axes: torch.Tensor, order: str, degrees: bool = False) -> torch.Tensor:
         raise NotImplementedError
@@ -468,7 +554,23 @@ class Rotation(torch.nn.Module):
 
     @classmethod
     def concatenate(cls, rotations: Sequence[Rotation]) -> Rotation:
-        raise NotImplementedError
+        """Concatenate a sequence of `Rotation` objects into a single object.
+
+        Parameters
+        ----------
+        rotations
+            The rotations to concatenate.
+
+        Returns
+        -------
+        concatenated
+            The concatenated rotations.
+        """
+        if not all(isinstance(x, Rotation) for x in rotations):
+            raise TypeError('input must contain Rotation objects only')
+
+        quats = torch.cat([torch.atleast_2d(x.as_quat()) for x in rotations])
+        return cls(quats, normalize=False)
 
     def forward(
         self,
@@ -545,6 +647,44 @@ class Rotation(torch.nn.Module):
 
         else:
             return result
+
+    @classmethod
+    def random(
+        cls,
+        num: int | Sequence[int] | None = None,
+        random_state: int | np.random.RandomState | np.random.Generator | None = None,
+    ):
+        """Generate uniformly distributed rotations.
+
+        Parameters
+        ----------
+        num
+            Number of random rotations to generate. If None (default), then a
+            single rotation is generated.
+        random_state
+            If `random_state` is None, the `numpy.random.RandomState`
+            singleton is used.
+            If `random_state` is an int, a new ``RandomState`` instance is used,
+            seeded with `random_state`.
+            If `random_state` is already a ``Generator`` or ``RandomState`` instance
+            then that instance is used.
+
+        Returns
+        -------
+        random_rotation
+            Contains a single rotation if `num` is None. Otherwise contains a
+            stack of `num` rotations.
+        """
+        generator: np.random.RandomState = check_random_state(random_state)
+
+        if num is None:
+            random_sample = torch.as_tensor(generator.normal(size=4), dtype=torch.float32)
+        elif isinstance(num, int):
+            random_sample = torch.as_tensor(generator.normal(size=(num, 4)), dtype=torch.float32)
+        else:
+            random_sample = torch.as_tensor(generator.normal(size=(*num, 4)), dtype=torch.float32)
+
+        return cls(random_sample)
 
     def __mul__(self, other: Rotation) -> Rotation:
         """For compatibility with sp.spatial.transform.Rotation."""
@@ -832,4 +972,16 @@ class Rotation(torch.nn.Module):
     def align_vectors(
         cls, a: torch.Tensor, b: torch.Tensor, weights: torch.Tensor | None = None, return_sensitivity: bool = False
     ) -> tuple[Rotation, float] | tuple[Rotation, float, torch.Tensor]:
-        raise NotImplementedError
+        """Estimate a rotation to optimally align two sets of vectors.
+
+        For more information, see scipy.spatial.transform
+        Rotation.align_vectors. This will move to cpu, invoke scipy,
+        convert to tensor, move back to device of a.
+        """
+        a_np = a.numpy(force=True)
+        b_np = b.numpy(force=True)
+        weights_np = weights.numpy(force=True) if weights is not None else None
+        rotation_sp, *other = Rotation_scipy.align_vectors(a_np, b_np, weights_np, return_sensitivity)
+        quat_np = rotation_sp.as_quat()
+        quat = torch.as_tensor(quat_np, device=a.device, dtype=a.dtype)
+        return (cls(quat), *other)
