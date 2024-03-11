@@ -219,13 +219,28 @@ class Rotation(torch.nn.Module):
     """A pytorch implementation of scipy.spatial.transform.Rotation.
 
     Differences compared to scipy.spatial.transform.Rotation:
-    - torch.nn.Module based
-    - .apply if replaced by call.
-    - not all features are implemented
+    - torch.nn.Module based, the quaternions are a Parameter
+    - .apply is replaced by call/forward.
+    - not all features are implemented. Notably, mrp, davenport, mean and reduce are missing.
     - arbitrary number of batching dimensions
     """
 
     def __init__(self, quaternions: torch.Tensor, normalize: bool = True, copy: bool = True):
+        """Initialize a new Rotation.
+
+        Instead of calling this method, also consider the different
+        from_* class methods to construct a Rotation.
+
+        Parameters
+        ----------
+        quaternions
+            Rotatation quaternions. If these requires_grad, the resulting Rotation will require gradients
+        normalize
+            If the quaternions should be normalized. Only disable if you are sure the quaternions are already normalized
+        copy
+            Always ensure that a copy of the quaternions is created. If both normalize and copy are False,
+            the quaternions Parameter of this instance will be a view if the quaternions passed in.
+        """
         super().__init__()
         if not isinstance(quaternions, torch.Tensor):
             quaternions = torch.as_tensor(quaternions)  # type: ignore[unreachable]
@@ -253,7 +268,7 @@ class Rotation(torch.nn.Module):
             quaternions = quaternions / norms
         elif copy:
             quaternions = quaternions.clone()
-        self.register_buffer('_quaternions', quaternions)
+        self._quaternions = torch.nn.Parameter(quaternions, quaternions.requires_grad)
 
     @property
     def single(self) -> bool:
@@ -340,7 +355,7 @@ class Rotation(torch.nn.Module):
             rotvec = torch.deg2rad(rotvec)
 
         if rotvec.shape[-1] != 3:
-            raise ValueError('Expected `rot_vec` to have shape (..., 3), got {rotvec.shape}')
+            raise ValueError(f'Expected `rot_vec` to have shape (..., 3), got {rotvec.shape}')
 
         angles = torch.linalg.vector_norm(rotvec, dim=-1, keepdim=True)
         scales = torch.special.sinc(angles / (2 * torch.pi)) / 2
@@ -1026,6 +1041,8 @@ class Rotation(torch.nn.Module):
     @property
     def shape(self) -> torch.Size:
         """Return the batch shape of the Rotation."""
+        if self._single:
+            return torch.Size()
         return self._quaternions.shape[:-1]
 
     def __bool__(self):
@@ -1041,3 +1058,82 @@ class Rotation(torch.nn.Module):
         if self._single:
             raise TypeError('Single rotation has no len().')
         return self.shape[0]
+
+    def __repr__(self):
+        """Return String Representation of the Rotation."""
+        if self._single:
+            return f'Rotation({self._quaternions.tolist()})'
+        else:
+            return f'{self.shape}-Batched Rotation()'
+
+    def mean(self, weights: torch.Tensor | None = None, dim: None | int | Sequence[int] = None, keepdim: bool = False):
+        r"""Get the mean of the rotations.
+
+        The mean used is the chordal L2 mean (also called the projected or
+        induced arithmetic mean) [1]_. If ``A`` is a set of rotation matrices,
+        then the mean ``M`` is the rotation matrix that minimizes the
+        following loss function:
+
+        .. math::
+
+            L(M) = \\sum_{i = 1}^{n} w_i \\lVert \\mathbf{A}_i -
+            \\mathbf{M} \\rVert^2 ,
+
+        where :math:`w_i`'s are the `weights` corresponding to each matrix.
+
+        Parameters
+        ----------
+        weights
+            Weights describing the relative importance of the rotations. If
+            None (default), then all values in `weights` are assumed to be
+            equal.
+        dim
+            Dimensions to reduce over. None will always return a single Rotation.
+        keepdim
+            Keep reduction dimensions as length-1 dimensions.
+
+
+        Returns
+        -------
+        mean : `Rotation` instance
+            Object containing the mean of the rotations in the current
+            instance.
+
+        References
+        ----------
+        .. [1] Hartley, Richard, et al.,
+                "Rotation Averaging", International Journal of Computer Vision
+                103, 2013, pp. 267-305.
+        """
+        if weights is None:
+            weights = torch.ones(*self.shape)
+        else:
+            weights = torch.as_tensor(weights)
+            weights = weights.expand(self.shape)
+
+            if torch.any(weights < 0):
+                raise ValueError('`weights` must be non-negative.')
+
+        quaternions = torch.as_tensor(self._quaternions)
+        if dim is None:
+            quaternions = quaternions.reshape(-1, 4)
+            weights = weights.reshape(-1)
+            dim = range(len(self.shape))
+        else:
+            dim = (
+                [d % (quaternions.ndim - 1) for d in dim]
+                if isinstance(dim, Sequence)
+                else [dim % (quaternions.ndim - 1)]
+            )
+            batch_dims = [i for i in range(quaternions.ndim - 1) if i not in dim]
+            permute_dims = (*batch_dims, *dim)
+            quaternions = quaternions.permute(*permute_dims, -1).flatten(start_dim=len(batch_dims), end_dim=-2)
+            weights = weights.permute(permute_dims).flatten(start_dim=len(batch_dims))
+        k = (weights.unsqueeze(-2) * quaternions.mT) @ quaternions
+        _, v = torch.linalg.eigh(k)
+        mean_quaternions = v[..., -1]
+        if keepdim:
+            # unsqueeze the dimensions we removed in the reshape and product
+            for d in sorted(dim):
+                mean_quaternions = mean_quaternions.unsqueeze(d)
+        return self.__class__(mean_quaternions, normalize=False)

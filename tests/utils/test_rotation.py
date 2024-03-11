@@ -360,6 +360,9 @@ def test_rotvec_calc_pipeline():
 # all mrp tests from scipy.spatial.transform.Rotation removed
 # as we haven't implemented as_mrp nor from_mrp.
 
+# all davenport  tests from scipy.spatial.transform.Rotation removed
+# as we haven't implemented as_davenport nor from_davenport.
+
 
 def test_from_euler_single_rotation():
     quat = Rotation.from_euler('z', 90, degrees=True).as_quat()
@@ -1515,4 +1518,62 @@ def test_len_and_bool():
     assert rotation_single
 
 
-# removed from davenport tests
+@pytest.mark.parametrize('theta', [0.0, np.pi / 8, np.pi / 4, np.pi / 3, np.pi / 2])
+def test_mean(theta):
+    axes = np.concatenate((-np.eye(3), np.eye(3)))
+    r = Rotation.from_rotvec(theta * axes)
+    assert math.isclose(r.mean().magnitude(), 0.0)
+
+
+@pytest.mark.parametrize('theta', [0.0, np.pi / 8, np.pi / 4, np.pi / 3, np.pi / 2])
+def test_weighted_mean(theta):
+    # test that doubling a weight is equivalent to including a rotation twice.
+    axes = np.array([[0, 0, 0], [1, 0, 0], [1, 0, 0]])
+    rw = Rotation.from_rotvec(theta * axes[:2])
+    mw = rw.mean(weights=[1, 2])
+    r = Rotation.from_rotvec(theta * axes)
+    m = r.mean()
+    assert math.isclose((m @ mw.inv()).magnitude(), 0, abs_tol=1e-12)
+
+
+@pytest.mark.parametrize(
+    ('shape', 'keepdim', 'dim', 'expected_shape'),
+    [
+        ((3, 2, 4), True, 0, (1, 2, 4)),
+        ((4, 3, 2), False, 0, (3, 2)),
+        ((5, 4, 2), True, [0, -1], (1, 4, 1)),
+        ((3, 1, 2), True, None, (1, 1, 1)),
+        ((3, 4, 2), False, None, ()),
+        ((3,), True, -1, (1,)),
+        ((3,), False, -1, ()),
+    ],
+)
+def test_weighted_mean_dims(shape, keepdim, dim, expected_shape):
+    """Tests Rotation.mean for different combinations dim and shape.
+
+    Checks the resulting shape and tests if multiplying a weight by N is
+    equivalent to including a rotation Ntimes.
+    """
+
+    rnd = RandomGenerator(0)
+    rotvectors1 = rnd.float32_tensor(size=(*shape[1:], 3))
+    rotvectors2 = rnd.float32_tensor(size=(*shape[1:], 3))
+    rotvectors = torch.stack([rotvectors1, *([rotvectors2] * (shape[0] - 1))], 0)
+    weights = torch.ones(2, *[1 for _ in shape[1:]])
+    weights[-1, ...] = shape[0] - 1
+
+    # only include rotvectors2 one time, but weight it higher
+    rotations_weight = Rotation.from_rotvec(rotvectors[:2])
+    mean1 = rotations_weight.mean(weights=weights, keepdim=keepdim, dim=dim)
+    # include rotvectors2 multiple times, but no weights
+    rotations_full = Rotation.from_rotvec(rotvectors)
+    mean2 = rotations_full.mean(weights=None, keepdim=keepdim, dim=dim)
+
+    assert mean1.shape == expected_shape, 'Shape does not match'
+    torch.testing.assert_close(mean1.as_quat(), mean2.as_quat(), atol=1e-6, rtol=0)
+
+
+def test_mean_invalid_weights():
+    r = Rotation.from_quat(np.eye(4))
+    with pytest.raises(ValueError, match='non-negative'):
+        r.mean(weights=-np.ones(4))
