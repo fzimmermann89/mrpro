@@ -1079,17 +1079,18 @@ def test_align_vectors_scaled_weights():
     torch.testing.assert_close(cov1, cov2)
 
 
+@pytest.mark.filterwarnings('ignore::DeprecationWarning')
 def test_align_vectors_noise():
     rnd = np.random.RandomState(0)
     n_vectors = 100
     rot = Rotation.random(random_state=rnd)
-    vectors = rnd.normal(size=(n_vectors, 3))
+    vectors = rnd.normal(size=(n_vectors, 3)).astype(np.float32)
     result = rot(vectors)
 
     # The paper adds noise as independently distributed angular errors
-    sigma = torch.deg2rad(1)
+    sigma = np.deg2rad(1)
     tolerance = 1.5 * sigma
-    noise = Rotation.from_rotvec(rnd.normal(size=(n_vectors, 3), scale=sigma))
+    noise = Rotation.from_rotvec(rnd.normal(size=(n_vectors, 3), scale=sigma).astype(np.float32))
 
     # Attitude errors must preserve norm. Hence apply individual random
     # rotations to each vector.
@@ -1099,17 +1100,12 @@ def test_align_vectors_noise():
 
     # Use rotation compositions to find out closeness
     error_vector = (rot * est.inv()).as_rotvec()
-    torch.testing.assert_close(error_vector[0], 0, atol=tolerance, rtol=0)
-    torch.testing.assert_close(error_vector[1], 0, atol=tolerance, rtol=0)
-    torch.testing.assert_close(error_vector[2], 0, atol=tolerance, rtol=0)
+    torch.testing.assert_close(error_vector, torch.zeros(3), atol=tolerance, rtol=0)
 
     # Check error bounds using covariance matrix
     cov *= sigma
-    torch.testing.assert_close(cov[0, 0], 0, atol=tolerance, rtol=0)
-    torch.testing.assert_close(cov[1, 1], 0, atol=tolerance, rtol=0)
-    torch.testing.assert_close(cov[2, 2], 0, atol=tolerance, rtol=0)
-
-    torch.testing.assert_close(rssd, torch.sum((noisy_result - est(vectors)) ** 2) ** 0.5)
+    torch.testing.assert_close(torch.diag(cov), torch.zeros(3), atol=tolerance, rtol=0)
+    torch.testing.assert_close(torch.sum((noisy_result - est(vectors)) ** 2) ** 0.5, torch.tensor(rssd))
 
 
 def test_align_vectors_invalid_input():
@@ -1151,23 +1147,23 @@ def test_align_vectors_align_constrain():
     # it such that the +Y B axis (residual of the [1, 1, 0] secondary b vector)
     # is aligned with the +Z A axis (residual of the [0, 1, 1] secondary a
     # vector)
-    atol = 1e-12
+    atol = 1e-6
     b = [[1, 0, 0], [1, 1, 0]]
     a = [[0, 1, 0], [0, 1, 1]]
-    m_expected = torch.tensor([[0, 0, 1], [1, 0, 0], [0, 1, 0]])
+    m_expected = torch.tensor([[0, 0, 1], [1, 0, 0], [0, 1, 0]]).float()
     r, rssd = Rotation.align_vectors(a, b, weights=[torch.inf, 1])
     torch.testing.assert_close(r.as_matrix(), m_expected, atol=atol, rtol=0)
-    torch.testing.assert_close(r(b), a, atol=atol, rtol=0)  # Pri and sec align exactly
-    assert torch.isclose(rssd, 0, atol=atol, rtol=0)
+    torch.testing.assert_close(r(b), torch.tensor(a).float(), atol=atol, rtol=0)  # Pri and sec align exactly
+    assert math.isclose(rssd, 0, abs_tol=atol)
 
     # Do the same but with an inexact secondary rotation
     b = [[1, 0, 0], [1, 2, 0]]
     rssd_expected = 1.0
     r, rssd = Rotation.align_vectors(a, b, weights=[torch.inf, 1])
     torch.testing.assert_close(r.as_matrix(), m_expected, atol=atol, rtol=0)
-    torch.testing.assert_close(r(b)[0], a[0], atol=atol, rtol=0)  # Only pri aligns exactly
-    assert torch.isclose(rssd, rssd_expected, atol=atol, rtol=0)
-    a_expected = [[0, 1, 0], [0, 1, 2]]
+    torch.testing.assert_close(r(b)[0], torch.tensor(a[0]).float(), atol=atol, rtol=0)  # Only pri aligns exactly
+    assert math.isclose(rssd, rssd_expected, abs_tol=atol)
+    a_expected = torch.tensor([[0, 1, 0], [0, 1, 2]]).float()
     torch.testing.assert_close(r(b), a_expected, atol=atol, rtol=0)
 
     # Check random vectors
@@ -1175,8 +1171,8 @@ def test_align_vectors_align_constrain():
     a = [[-1, 3, 2], [1, -1, 2]]
     rssd_expected = 1.3101595297515016
     r, rssd = Rotation.align_vectors(a, b, weights=[torch.inf, 1])
-    torch.testing.assert_close(r(b)[0], a[0], atol=atol, rtol=0)  # Only pri aligns exactly
-    assert torch.isclose(rssd, rssd_expected, atol=atol, rtol=0)
+    torch.testing.assert_close(r(b)[0], torch.tensor(a[0]).float(), atol=atol, rtol=0)  # Only pri aligns exactly
+    assert math.isclose(rssd, rssd_expected, abs_tol=atol)
 
 
 def test_align_vectors_near_inf():
@@ -1195,7 +1191,7 @@ def test_align_vectors_near_inf():
 
         r, _ = Rotation.align_vectors(a, b, weights=[1e10, 1])
         r2, _ = Rotation.align_vectors(a, b, weights=[torch.inf, 1])
-        torch.testing.assert_close(r.as_matrix(), r2.as_matrix(), atol=1e-4)
+        torch.testing.assert_close(r.as_matrix(), r2.as_matrix(), atol=1e-4, rtol=0.0)
 
     for i in range(n):
         # Get random triplets of 3-element vectors
@@ -1204,31 +1200,29 @@ def test_align_vectors_near_inf():
 
         r, _ = Rotation.align_vectors(a, b, weights=[1e10, 2, 1])
         r2, _ = Rotation.align_vectors(a, b, weights=[torch.inf, 2, 1])
-        torch.testing.assert_close(r.as_matrix(), r2.as_matrix(), atol=1e-4)
+        torch.testing.assert_close(r.as_matrix(), r2.as_matrix(), atol=1e-4, rtol=0.0)
 
 
 def test_align_vectors_parallel():
-    atol = 1e-12
+    atol = 1e-6
     a = [[1, 0, 0], [0, 1, 0]]
     b = [[0, 1, 0], [0, 1, 0]]
-    m_expected = torch.tensor([[0, 1, 0], [-1, 0, 0], [0, 0, 1]])
+    m_expected = torch.tensor([[0, 1, 0], [-1, 0, 0], [0, 0, 1]]).float()
     r, _ = Rotation.align_vectors(a, b, weights=[torch.inf, 1])
-    torch.testing.assert_close(r.as_matrix(), m_expected, atol=atol)
+    torch.testing.assert_close(r.as_matrix(), m_expected, atol=atol, rtol=0)
     r, _ = Rotation.align_vectors(a[0], b[0])
-    torch.testing.assert_close(r.as_matrix(), m_expected, atol=atol)
-    torch.testing.assert_close(r(b[0]), a[0], atol=atol)
+    torch.testing.assert_close(r.as_matrix(), m_expected, atol=atol, rtol=0)
+    torch.testing.assert_close(r(b[0]), torch.tensor(a[0]).float(), atol=atol, rtol=0)
 
     b = [[1, 0, 0], [1, 0, 0]]
-    m_expected = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+    m_expected = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]).float()
     r, _ = Rotation.align_vectors(a, b, weights=[torch.inf, 1])
-    torch.testing.assert_close(r.as_matrix(), m_expected, atol=atol)
+    torch.testing.assert_close(r.as_matrix(), m_expected, atol=atol, rtol=0)
     r, _ = Rotation.align_vectors(a[0], b[0])
-    torch.testing.assert_close(r.as_matrix(), m_expected, atol=atol)
-    torch.testing.assert_close(r(b[0]), a[0], atol=atol)
+    torch.testing.assert_close(r.as_matrix(), m_expected, atol=atol, rtol=0)
+    torch.testing.assert_close(r(b[0]), torch.tensor(a[0]).float(), atol=atol, rtol=0)
 
-
-def test_align_vectors_primary_only():
-    atol = 1e-12
+    atol = 1e-6
     mats_a = Rotation.random(100, random_state=0).as_matrix()
     mats_b = Rotation.random(100, random_state=1).as_matrix()
     for mat_a, mat_b in zip(mats_a, mats_b, strict=False):
@@ -1238,8 +1232,8 @@ def test_align_vectors_primary_only():
 
         # Compare to align_vectors with primary only
         r, rssd = Rotation.align_vectors(a, b)
-        torch.testing.assert_close(r(b), a, atol=atol)
-        assert torch.isclose(rssd, 0, atol=atol)
+        torch.testing.assert_close(r(b), a, atol=atol, rtol=0)
+        assert math.isclose(rssd, 0, abs_tol=atol)
 
 
 # def test_slerp():

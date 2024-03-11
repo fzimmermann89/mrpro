@@ -644,9 +644,9 @@ class Rotation(torch.nn.Module):
                 f'is not compatible with the input batch shape {list(vectors_tensor.shape[:-1])}'
             ) from None
 
-        # if self._single and vectors_tensor.shape == (3,):
-        #     # a single rotation and a single vector
-        #     result = result[0]
+        if self._single and vectors_tensor.shape == (3,):
+            # a single rotation and a single vector
+            result = result[0]
 
         if input_is_spatialdimension:
             return SpatialDimension(
@@ -979,7 +979,11 @@ class Rotation(torch.nn.Module):
 
     @classmethod
     def align_vectors(
-        cls, a: torch.Tensor, b: torch.Tensor, weights: torch.Tensor | None = None, return_sensitivity: bool = False
+        cls,
+        a: torch.Tensor | Sequence[torch.Tensor],
+        b: torch.Tensor | Sequence[torch.Tensor],
+        weights: torch.Tensor | None = None,
+        return_sensitivity: bool = False,
     ) -> tuple[Rotation, float] | tuple[Rotation, float, torch.Tensor]:
         """Estimate a rotation to optimally align two sets of vectors.
 
@@ -987,24 +991,33 @@ class Rotation(torch.nn.Module):
         Rotation.align_vectors. This will move to cpu, invoke scipy,
         convert to tensor, move back to device of a.
         """
-        a = torch.as_tensor(a)
-        a_np = a.numpy(force=True)
-        b = torch.as_tensor(b)
-        b_np = a.numpy(force=True)
+        a_tensor = torch.stack([torch.as_tensor(el) for el in a]) if isinstance(a, Sequence) else torch.as_tensor(a)
+        a_np = a_tensor.numpy(force=True)
+
+        b_tensor = torch.stack([torch.as_tensor(el) for el in b]) if isinstance(b, Sequence) else torch.as_tensor(b)
+        b_np = b_tensor.numpy(force=True)
+
+        dtype = torch.promote_types(a_tensor.dtype, b_tensor.dtype)
+        if not dtype.is_floating_point:
+            # boolean or integer inputs will result in float32
+            dtype = torch.float32
+
         if weights is None:
             weights_np = None
         elif isinstance(weights, torch.Tensor):
             weights_np = weights.numpy(force=True)
         else:
             weights_np = np.asarray(weights)  # type: ignore[unreachable]
+
         if return_sensitivity:
             rotation_sp, rssd, sensitivity_np = Rotation_scipy.align_vectors(a_np, b_np, weights_np, True)
-            sensitivity = torch.as_tensor(sensitivity_np)
+            sensitivity = torch.as_tensor(sensitivity_np, dtype=dtype)
         else:
             rotation_sp, rssd = Rotation_scipy.align_vectors(a_np, b_np, weights_np, False)
 
         quat_np = rotation_sp.as_quat()
-        quat = torch.as_tensor(quat_np, device=a.device, dtype=a.dtype)
+        quat = torch.as_tensor(quat_np, device=a_tensor.device, dtype=dtype)
+
         if return_sensitivity:
             return (cls(quat), float(rssd), sensitivity)
         else:
