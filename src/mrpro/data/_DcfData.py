@@ -35,7 +35,7 @@ def _volume(v: ArrayLike):
     return ConvexHull(v).volume
 
 
-def _volume2d(v):
+def _volume2d(v: np.ndarray):
     # Shoelace equation for 2d
     return np.abs(np.cross(v[:-1], v[1:]).sum(0) + np.cross(v[-1], v[0])) / 2
 

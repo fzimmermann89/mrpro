@@ -25,7 +25,6 @@ class SensitivityOp(LinearOperator):
         self,
         csm: CsmData,
     ) -> None:
-
         super().__init__()
         self.register_buffer('csm', csm)
 
@@ -55,5 +54,4 @@ class SensitivityOp(LinearOperator):
         -------
             image data tensor with dimensions (other 1 z y x).
         """
-
         return ((self.csm.data.conj() * img_data).sum(-4, keepdim=True),)

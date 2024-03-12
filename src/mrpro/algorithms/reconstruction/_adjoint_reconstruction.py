@@ -17,7 +17,7 @@ class AdjointReconstruction(Reconstruction):
 
     def __init__(
         self,
-        FourierOperator: LinearOperator,
+        fourier_operator: LinearOperator,
         csm: None | CsmData = None,
         noise: None | KNoise = None,
         dcf: DcfData | None = None,
@@ -26,23 +26,24 @@ class AdjointReconstruction(Reconstruction):
 
         Parameters
         ----------
-        FourierOperator
+        fourier_operator
             Instance of the FourierOperator which adjoint is used for reconstruction.
         csm
             Sensitivity maps for coil combination. If None, no coil combination will be performed.
+        noise
+            Used for Prewhitening
         dcf
             Density compensation. If None, no dcf will be performed.
             Also set to None, if the FourierOperator is already density compensated.
         """
-
         super().__init__()
-        self.FourierOperator = FourierOperator
+        self.FourierOperator = fourier_operator
         self.dcf = dcf
         self.csm = csm
         self.noise = noise
 
     @classmethod
-    def from_kdata(cls, kdata: KData, noise: KNoise | None = None, coil_combine=True) -> AdjointReconstruction:
+    def from_kdata(cls, kdata: KData, noise: KNoise | None = None, coil_combine: bool = True) -> AdjointReconstruction:
         """Create an AdjointReconstruction from kdata with default settings.
 
         Parameters
@@ -51,16 +52,15 @@ class AdjointReconstruction(Reconstruction):
             KData to use for trajektory and header information
         noise
             KNoise used for whitening
-        coil_comine
+        coil_combine
             if True (default), uses kdata to estimate sensitivity maps
             and perform adaptive coil combine reconstruction
         """
-
         if noise is not None:
             kdata = prewhiten_kspace(kdata, noise)
         dcf = DcfData.from_traj_voronoi(kdata.traj)
-        FourierOperator = FourierOp.from_kdata(kdata)
-        self = cls(FourierOperator, None, noise, dcf)
+        fourier_op = FourierOp.from_kdata(kdata)
+        self = cls(fourier_op, None, noise, dcf)
         if coil_combine:
             self.recalculate_csm_walsh(kdata)
         return self
@@ -73,7 +73,6 @@ class AdjointReconstruction(Reconstruction):
         kdata
             KData to determine trajectory and recon/encoding matrix from.
         """
-
         self.FourierOperator = FourierOp.from_kdata(kdata)
         self.dcf = DcfData.from_traj_voronoi(kdata.traj)
         return self
@@ -86,10 +85,9 @@ class AdjointReconstruction(Reconstruction):
         kdata
             KData used for adjoint reconstruction, which is then used for
             Walsh CSM estimation.
-        noise (optional)
-            Noise meassurement for prewhitening.
+        noise
+            Noise measurement for prewhitening (optional)
         """
-
         adjoint = AdjointReconstruction(self.FourierOperator, dcf=self.dcf, noise=noise)
         image = adjoint(kdata)
         self.csm = CsmData.from_idata_walsh(image)
@@ -108,7 +106,6 @@ class AdjointReconstruction(Reconstruction):
         image
             the reconstruced image.
         """
-
         if self.noise is not None:
             kdata = prewhiten_kspace(kdata, self.noise)
         operator = self.FourierOperator
