@@ -46,8 +46,8 @@ from scipy.spatial.transform import Rotation as Rotation_scipy
 
 from mrpro.data import SpatialDimension
 
-AXIS_ORDER = ('x', 'y', 'z')  # This can be modified
-QUAT_AXIS_ORDER = (*AXIS_ORDER, 'w')  # Do not modify
+AXIS_ORDER = 'zyx'  # This can be modified
+QUAT_AXIS_ORDER = AXIS_ORDER + 'w'  # Do not modify
 assert QUAT_AXIS_ORDER[:3] == AXIS_ORDER, 'Quaternion axis order has to match axis order'  # noqa: S101
 
 
@@ -221,7 +221,7 @@ class Rotation(torch.nn.Module):
     Differences compared to scipy.spatial.transform.Rotation:
     - torch.nn.Module based, the quaternions are a Parameter
     - .apply is replaced by call/forward.
-    - not all features are implemented. Notably, mrp, davenport and reduce are missing.
+    - not all features are implemented. Notably, mrp, davenport, and reduce are missing.
     - arbitrary number of batching dimensions
     """
 
@@ -899,49 +899,57 @@ class Rotation(torch.nn.Module):
     @property
     def quaternion_x(self) -> torch.Tensor:
         """Get x component of the quaternion."""
-        axis = AXIS_ORDER.index('x')
+        axis = QUAT_AXIS_ORDER.index('x')
+        if self._single:
+            return self._quaternions[0, axis]
         return self._quaternions[..., axis]
 
     @quaternion_x.setter
     def quaternion_x(self, quat_x: torch.Tensor):
         """Set x component of the quaternion."""
-        axis = AXIS_ORDER.index('x')
+        axis = QUAT_AXIS_ORDER.index('x')
         self._quaternions[..., axis] = quat_x
 
     @property
     def quaternion_y(self) -> torch.Tensor:
         """Get y component of the quaternion."""
-        axis = AXIS_ORDER.index('y')
+        axis = QUAT_AXIS_ORDER.index('y')
+        if self._single:
+            return self._quaternions[0, axis]
         return self._quaternions[..., axis]
 
     @quaternion_y.setter
     def quaternion_y(self, quat_y: torch.Tensor):
         """Set y component of the quaternion."""
-        axis = AXIS_ORDER.index('y')
+        axis = QUAT_AXIS_ORDER.index('y')
         self._quaternions[..., axis] = quat_y
 
     @property
     def quaternion_z(self) -> torch.Tensor:
         """Get z component of the quaternion."""
-        axis = AXIS_ORDER.index('z')
+        axis = QUAT_AXIS_ORDER.index('z')
+        if self._single:
+            return self._quaternions[0, axis]
         return self._quaternions[..., axis]
 
     @quaternion_z.setter
     def quaternion_z(self, quat_z: torch.Tensor):
         """Set z component of the quaternion."""
-        axis = AXIS_ORDER.index('z')
+        axis = QUAT_AXIS_ORDER.index('z')
         self._quaternions[..., axis] = quat_z
 
     @property
     def quaternion_w(self) -> torch.Tensor:
         """Get w component of the quaternion."""
-        axis = AXIS_ORDER.index('w')
+        axis = QUAT_AXIS_ORDER.index('w')
+        if self._single:
+            return self._quaternions[0, axis]
         return self._quaternions[..., axis]
 
     @quaternion_w.setter
     def quaternion_w(self, quat_w: torch.Tensor):
         """Set w component of the quaternion."""
-        axis = AXIS_ORDER.index('w')
+        axis = QUAT_AXIS_ORDER.index('w')
         self._quaternions[..., axis] = quat_w
 
     def __setitem__(self, indexer: int | slice | torch.Tensor, value: Rotation):
@@ -1064,7 +1072,7 @@ class Rotation(torch.nn.Module):
         if self._single:
             return f'Rotation({self._quaternions.tolist()})'
         else:
-            return f'{self.shape}-Batched Rotation()'
+            return f'{tuple(self.shape)}-Batched Rotation()'
 
     def mean(self, weights: torch.Tensor | None = None, dim: None | int | Sequence[int] = None, keepdim: bool = False):
         r"""Get the mean of the rotations.

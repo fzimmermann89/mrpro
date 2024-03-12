@@ -41,6 +41,8 @@ from math import sqrt
 import numpy as np
 import pytest
 import torch
+from mrpro.data import SpatialDimension
+from mrpro.utils._Rotation import AXIS_ORDER
 from mrpro.utils._Rotation import Rotation
 from scipy.stats import special_ortho_group
 
@@ -365,37 +367,42 @@ def test_rotvec_calc_pipeline():
 
 
 def test_from_euler_single_rotation():
-    quat = Rotation.from_euler('z', 90, degrees=True).as_quat()
+    lastaxis = AXIS_ORDER[-1]
+    quat = Rotation.from_euler(lastaxis.lower(), 90, degrees=True).as_quat()
     expected_quat = torch.tensor([0, 0, 1, 1]) / sqrt(2)
     torch.testing.assert_close(quat, expected_quat)
 
 
 def test_single_intrinsic_extrinsic_rotation():
-    extrinsic = Rotation.from_euler('z', 90, degrees=True).as_matrix()
-    intrinsic = Rotation.from_euler('Z', 90, degrees=True).as_matrix()
+    lastaxis = AXIS_ORDER[-1]
+    extrinsic = Rotation.from_euler(lastaxis.lower(), 90, degrees=True).as_matrix()
+    intrinsic = Rotation.from_euler(lastaxis.upper(), 90, degrees=True).as_matrix()
     torch.testing.assert_close(extrinsic, intrinsic)
 
 
 def test_from_euler_rotation_order():
     # Intrinsic rotation is same as extrinsic with order reversed
     rnd = RandomGenerator(0)
+    axes = AXIS_ORDER
     a = rnd.float32_tensor(low=0, high=180, size=(6, 3))
     b = torch.flip(a, (-1,))
-    x = Rotation.from_euler('xyz', a, degrees=True).as_quat()
-    y = Rotation.from_euler('ZYX', b, degrees=True).as_quat()
+    x = Rotation.from_euler(axes.lower(), a, degrees=True).as_quat()
+    y = Rotation.from_euler(axes[::-1].upper(), b, degrees=True).as_quat()
     torch.testing.assert_close(x, y)
 
 
 def test_from_euler_elementary_extrinsic_rotation():
     # Simple test to check if extrinsic rotations are implemented correctly
-    mat = Rotation.from_euler('zx', [90, 90], degrees=True).as_matrix()
+    axes = AXIS_ORDER[2] + AXIS_ORDER[0]
+    mat = Rotation.from_euler(axes, [90, 90], degrees=True).as_matrix()
     expected_mat = torch.tensor([[0, -1, 0], [0, 0, -1], [1, 0, 0]]).float()
     torch.testing.assert_close(mat, expected_mat)
 
 
-def test_from_euler_intrinsic_rotation_312():
+def test_from_euler_intrinsic_rotation_201():
     angles = [[30, 60, 45], [30, 60, 30], [45, 30, 60]]
-    mat = Rotation.from_euler('ZXY', angles, degrees=True).as_matrix()
+    axes = (AXIS_ORDER[2] + AXIS_ORDER[0] + AXIS_ORDER[1]).upper()
+    mat = Rotation.from_euler(axes, angles, degrees=True).as_matrix()
 
     torch.testing.assert_close(
         mat[0],
@@ -419,9 +426,10 @@ def test_from_euler_intrinsic_rotation_312():
     )
 
 
-def test_from_euler_intrinsic_rotation_313():
+def test_from_euler_intrinsic_rotation_202():
     angles = [[30, 60, 45], [30, 60, 30], [45, 30, 60]]
-    mat = Rotation.from_euler('ZXZ', angles, degrees=True).as_matrix()
+    axes = (AXIS_ORDER[2] + AXIS_ORDER[0] + AXIS_ORDER[2]).upper()
+    mat = Rotation.from_euler(axes, angles, degrees=True).as_matrix()
     expect0 = torch.tensor(
         [
             [0.43559574, -0.78914913, 0.4330127],
@@ -451,9 +459,10 @@ def test_from_euler_intrinsic_rotation_313():
     torch.testing.assert_close(mat[2], expect2)
 
 
-def test_from_euler_extrinsic_rotation_312():
+def test_from_euler_extrinsic_rotation_201():
     angles = [[30, 60, 45], [30, 60, 30], [45, 30, 60]]
-    mat = Rotation.from_euler('zxy', angles, degrees=True).as_matrix()
+    axes = (AXIS_ORDER[2] + AXIS_ORDER[0] + AXIS_ORDER[1]).lower()
+    mat = Rotation.from_euler(axes, angles, degrees=True).as_matrix()
 
     torch.testing.assert_close(
         mat[0],
@@ -489,9 +498,11 @@ def test_from_euler_extrinsic_rotation_312():
     )
 
 
-def test_from_euler_extrinsic_rotation_313():
+def test_from_euler_extrinsic_rotation_202():
     angles = [[30, 60, 45], [30, 60, 30], [45, 30, 60]]
-    mat = Rotation.from_euler('zxz', angles, degrees=True).as_matrix()
+    axes = (AXIS_ORDER[2] + AXIS_ORDER[0] + AXIS_ORDER[2]).lower()
+
+    mat = Rotation.from_euler(axes, angles, degrees=True).as_matrix()
 
     torch.testing.assert_close(
         mat[0],
@@ -629,73 +640,6 @@ def test_as_euler_degenerate_symmetric_axes(seq_tuple, intrinsic):
     mat_estimated = Rotation.from_euler(seq, angle_estimates, degrees=True).as_matrix()
 
     torch.testing.assert_close(mat_expected, mat_estimated)
-
-
-# @pytest.mark.parametrize("seq_tuple", permutations("xyz"))
-# @pytest.mark.parametrize("intrinsic", (False, True))
-# def test_as_euler_degenerate_compare_algorithms(seq_tuple, intrinsic):
-#     # this test makes sure that both algorithms are doing the same choices
-#     # in degenerate cases
-
-#     # asymmetric axes
-#     angles = torch.tensor([
-#         [45, 90, 35],
-#         [35, -90, 20],
-#         [35, 90, 25],
-#         [25, -90, 15]])
-
-#     seq = "".join(seq_tuple)
-#     if intrinsic:
-#         # Extrinsic rotation (wrt to global world at lower case
-#         # Intrinsic (WRT the object itself) upper case.
-#         seq = seq.upper()
-
-#     rot = Rotation.from_euler(seq, angles, degrees=True)
-#     with pytest.warns(UserWarning, match="Gimbal lock"):
-#         estimates_matrix = rot._as_euler_from_matrix(seq, degrees=True)
-#     with pytest.warns(UserWarning, match="Gimbal lock"):
-#         estimates_quat = rot.as_euler(seq, degrees=True)
-#     torch.testing.assert_close(
-#         estimates_matrix[:, [0, 2]], estimates_quat[:, [0, 2]], atol=0, rtol=1e-12
-#     )
-#     torch.testing.assert_close(estimates_matrix[:, 1], estimates_quat[:, 1], atol=0, rtol=1e-7)
-
-#     # symmetric axes
-#     # Absolute error tolerance must be looser to directly compare the results
-#     # from both algorithms, because of numerical loss of precision for the
-#     # method _as_euler_from_matrix near a zero angle value
-
-#     angles = torch.tensor([
-#         [15, 0, 60],
-#         [35, 0, 75],
-#         [60, 180, 35],
-#         [15, -180, 25]])
-
-#     idx = angles[:, 1] == 0  # find problematic angles indices
-
-#     # Rotation of the form A/B/A are rotation around symmetric axes
-#     seq = "".join([seq_tuple[0], seq_tuple[1], seq_tuple[0]])
-#     if intrinsic:
-#         # Extrinsinc rotation (wrt to global world) at lower case
-#         # Intrinsic (WRT the object itself) upper case.
-#         seq = seq.upper()
-
-#     rot = Rotation.from_euler(seq, angles, degrees=True)
-#     with pytest.warns(UserWarning, match="Gimbal lock"):
-#         estimates_matrix = rot._as_euler_from_matrix(seq, degrees=True)
-#     with pytest.warns(UserWarning, match="Gimbal lock"):
-#         estimates_quat = rot.as_euler(seq, degrees=True)
-#     torch.testing.assert_close(
-#         estimates_matrix[:, [0, 2]], estimates_quat[:, [0, 2]], atol=0, rtol=1e-12
-#     )
-
-#     torch.testing.assert_close(
-#         estimates_matrix[~idx, 1], estimates_quat[~idx, 1], atol=0, rtol=1e-7
-#     )
-
-#     torch.testing.assert_close(
-#         estimates_matrix[idx, 1], estimates_quat[idx, 1], atol=1e-6
-#     )  # problematic, angles[1] = 0
 
 
 def test_inv():
@@ -885,9 +829,27 @@ def test_approx_equal_single_rotation():
 #     assert (left_best == left_best_check).all()
 #     assert (right_best == right_best_check).all()
 
+
 #     reduced_check = l[left_best_check] * p * r[right_best_check]
 #     mag = (reduced.inv() * reduced_check).magnitude()
 #     torch.testing.assert_close(mag, torch.zeros(len(p)))
+def test_apply_single_spatialdim():
+    vec = SpatialDimension(1.0, 2.0, 3.0)
+    mat = torch.tensor([[0, -1, 0], [1, 0, 0], [0, 0, 1]]).float()
+    r_1d = Rotation.from_matrix(mat)
+    r_2d = Rotation.from_matrix(mat.unsqueeze(0))
+    v_1d = r_1d(vec)
+    v_2d = r_2d(vec)
+
+    assert isinstance(v_1d, SpatialDimension)
+    torch.testing.assert_close(getattr(v_1d, AXIS_ORDER[0]), torch.tensor(-2.0))
+    torch.testing.assert_close(getattr(v_1d, AXIS_ORDER[1]), torch.tensor(1.0))
+    torch.testing.assert_close(getattr(v_1d, AXIS_ORDER[2]), torch.tensor(3.0))
+
+    assert isinstance(v_2d, SpatialDimension)
+    torch.testing.assert_close(getattr(v_2d, AXIS_ORDER[0]), torch.tensor([-2.0]))
+    torch.testing.assert_close(getattr(v_2d, AXIS_ORDER[1]), torch.tensor([1.0]))
+    torch.testing.assert_close(getattr(v_2d, AXIS_ORDER[2]), torch.tensor([3.0]))
 
 
 def test_apply_single_rotation_single_point():
@@ -1577,3 +1539,31 @@ def test_mean_invalid_weights():
     r = Rotation.from_quat(np.eye(4))
     with pytest.raises(ValueError, match='non-negative'):
         r.mean(weights=-np.ones(4))
+
+
+def test_repr():
+    assert repr(Rotation.identity(None)) == 'Rotation([[0.0, 0.0, 0.0, 1.0]])'
+    assert repr(Rotation.identity(1)) == '(1,)-Batched Rotation()'
+
+
+def test_quaternion_properties():
+    quat = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    quat /= quat.norm()
+    r = Rotation(quat, normalize=False)
+    assert r.quaternion_x == quat[AXIS_ORDER.index('x')]
+    assert r.quaternion_y == quat[AXIS_ORDER.index('y')]
+    assert r.quaternion_z == quat[AXIS_ORDER.index('z')]
+    assert r.quaternion_w == quat[-1]
+    r.quaternion_x = 1.0
+    r.quaternion_y = torch.tensor(2.0)
+    r.quaternion_z = 3
+    r.quaternion_w = 4.0
+    torch.testing.assert_close(r.quaternion_x, torch.tensor(1.0))
+    torch.testing.assert_close(r.quaternion_y, torch.tensor(2.0))
+    torch.testing.assert_close(r.quaternion_z, torch.tensor(3.0))
+    torch.testing.assert_close(r.quaternion_w, torch.tensor(4.0))
+
+
+def test_axis_order_zyx():
+    "Check that the axis order is set to zyx"
+    assert AXIS_ORDER == 'zyx'
