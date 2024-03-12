@@ -590,11 +590,9 @@ def test_as_euler_symmetric_axes(seq_tuple, intrinsic):
         seq = seq.upper()
     rotation = Rotation.from_euler(seq, angles)
     angles_quat = rotation.as_euler(seq)
-    # angles_mat = rotation._as_euler_from_matrix(seq)
+
     torch.testing.assert_close(torch.as_tensor(angles), angles_quat, atol=0, rtol=1e-13)
-    # torch.testing.assert_close(angles, angles_mat, atol=0, rtol=1e-9)
     test_stats(angles_quat - angles, 1e-16, 1e-14)
-    # test_stats(angles_mat - angles, 1e-15, 1e-13)
 
 
 @pytest.mark.parametrize('seq_tuple', permutations('xyz'))
@@ -766,73 +764,6 @@ def test_approx_equal_single_rotation():
     assert not p.approx_equal(q[3], atol=1e-8, degrees=True)
 
 
-# def test_mean():
-#     axes = torch.concatenate((-torch.eye(3), torch.eye(3)))
-#     thetas = torch.linspace(0, torch.pi / 2, 100)
-#     for t in thetas:
-#         r =  Rotation.from_rotvec(t * axes)
-#         torch.testing.assert_close(r.mean().magnitude(), 0, atol=1E-10)
-
-
-# def test_weighted_mean():
-#     # test that doubling a weight is equivalent to including a rotation twice.
-#     axes = torch.tensor([[0, 0, 0], [1, 0, 0], [1, 0, 0]])
-#     thetas = torch.linspace(0, torch.pi / 2, 100)
-#     for t in thetas:
-#         rw = Rotation.from_rotvec(t * axes[:2])
-#         mw = rw.mean(weights=[1, 2])
-
-#         r =  Rotation.from_rotvec(t * axes)
-#         m = r.mean()
-#         torch.testing.assert_close((m * mw.inv()).magnitude(), 0, atol=1E-10)
-
-
-# def test_mean_invalid_weights():
-#     with pytest.raises(ValueError, match="non-negative"):
-#         r =  Rotation.from_quat(torch.eye(4))
-#         r.mean(weights=-torch.ones(4))
-
-
-# def test_reduction_no_indices():
-#     result = Rotation.identity().reduce(return_indices=False)
-#     assert isinstance(result, Rotation)
-
-
-# def test_reduction_none_indices():
-#     result = Rotation.identity().reduce(return_indices=True)
-#     assert type(result) == tuple
-#     assert len(result) == 3
-
-#     reduced, left_best, right_best = result
-#     assert left_best is None
-#     assert right_best is None
-
-
-# def test_reduction_scalar_calculation():
-#     rng = np.random.RandomState(0)
-#     l = Rotation.random(5, random_state=rng)
-#     r =  Rotation.random(10, random_state=rng)
-#     p = Rotation.random(7, random_state=rng)
-#     reduced, left_best, right_best = p.reduce(l, r, return_indices=True)
-
-#     # Loop implementation of the vectorized calculation in Rotation.reduce
-#     scalars = torch.zeros((len(l), len(p), len(r)))
-#     for i, li in enumerate(l):
-#         for j, pj in enumerate(p):
-#             for k, rk in enumerate(r):
-#                 scalars[i, j, k] = torch.abs((li * pj * rk).as_quat()[3])
-#     scalars = torch.reshape(torch.moveaxis(scalars, 1, 0), (scalars.shape[1], -1))
-
-#     max_ind = torch.argmax(torch.reshape(scalars, (len(p), -1)), axis=1)
-#     left_best_check = max_ind // len(r)
-#     right_best_check = max_ind % len(r)
-#     assert (left_best == left_best_check).all()
-#     assert (right_best == right_best_check).all()
-
-
-#     reduced_check = l[left_best_check] * p * r[right_best_check]
-#     mag = (reduced.inv() * reduced_check).magnitude()
-#     torch.testing.assert_close(mag, torch.zeros(len(p)))
 def test_apply_single_spatialdim():
     vec = SpatialDimension(1.0, 2.0, 3.0)
     mat = torch.tensor([[0, -1, 0], [1, 0, 0], [0, 0, 1]]).float()
@@ -1199,144 +1130,6 @@ def test_align_vectors_parallel():
         r, rssd = Rotation.align_vectors(a, b)
         torch.testing.assert_close(r(b), a, atol=atol, rtol=0)
         assert math.isclose(rssd, 0, abs_tol=atol)
-
-
-# def test_slerp():
-#     rnd = np.random.RandomState(0)
-
-#     key_rots = Rotation.from_quat(rnd.uniform(size=(5, 4)))
-#     key_quats = key_rots.as_quat()
-
-#     key_times = [0, 1, 2, 3, 4]
-#     interpolator = Slerp(key_times, key_rots)
-
-#     times = [0, 0.5, 0.25, 1, 1.5, 2, 2.75, 3, 3.25, 3.60, 4]
-#     interp_rots = interpolator(times)
-#     interp_quats = interp_rots.as_quat()
-
-#     # Dot products are affected by sign of quaternions
-#     interp_quats[interp_quats[:, -1] < 0] *= -1
-#     # Checking for quaternion equality, perform same operation
-#     key_quats[key_quats[:, -1] < 0] *= -1
-
-#     # Equality at keyframes, including both endpoints
-#     torch.testing.assert_close(interp_quats[0], key_quats[0])
-#     torch.testing.assert_close(interp_quats[3], key_quats[1])
-#     torch.testing.assert_close(interp_quats[5], key_quats[2])
-#     torch.testing.assert_close(interp_quats[7], key_quats[3])
-#     torch.testing.assert_close(interp_quats[10], key_quats[4])
-
-#     # Constant angular velocity between keyframes. Check by equating
-#     # cos(theta) between quaternion pairs with equal time difference.
-#     cos_theta1 = torch.sum(interp_quats[0] * interp_quats[2])
-#     cos_theta2 = torch.sum(interp_quats[2] * interp_quats[1])
-#     torch.testing.assert_close(cos_theta1, cos_theta2)
-
-#     cos_theta4 = torch.sum(interp_quats[3] * interp_quats[4])
-#     cos_theta5 = torch.sum(interp_quats[4] * interp_quats[5])
-#     torch.testing.assert_close(cos_theta4, cos_theta5)
-
-#     # theta1: 0 -> 0.25, theta3 : 0.5 -> 1
-#     # Use double angle formula for double the time difference
-#     cos_theta3 = torch.sum(interp_quats[1] * interp_quats[3])
-#     torch.testing.assert_close(cos_theta3, 2 * (cos_theta1**2) - 1)
-
-#     # Miscellaneous checks
-#     assert (len(interp_rots), len(times))
-
-
-# def test_slerp_rot_is_rotation():
-#     with pytest.raises(TypeError, match="must be a `Rotation` instance"):
-#         r = torch.tensor([[1,2,3,4],
-#                       [0,0,0,1]])
-#         t = torch.tensor([0, 1])
-#         Slerp(t, r)
-
-
-# def test_slerp_single_rot():
-#     msg = "must be a sequence of at least 2 rotations"
-#     with pytest.raises(ValueError, match=msg):
-#         r =  Rotation.from_quat([1, 2, 3, 4])
-#         Slerp([1], r)
-
-
-# def test_slerp_rot_len1():
-#     msg = "must be a sequence of at least 2 rotations"
-#     with pytest.raises(ValueError, match=msg):
-#         r =  Rotation.from_quat([[1, 2, 3, 4]])
-#         Slerp([1], r)
-
-
-# def test_slerp_time_dim_mismatch():
-#     with pytest.raises(ValueError,
-#                        match="times to be specified in a 1 dimensional array"):
-#         rnd = np.random.RandomState(0)
-#         r =  Rotation.from_quat(rnd.uniform(size=(2, 4)))
-#         t = torch.tensor([[1],
-#                       [2]])
-#         Slerp(t, r)
-
-
-# def test_slerp_num_rotations_mismatch():
-#     with pytest.raises(ValueError, match="number of rotations to be equal to "
-#                                          "number of timestamps"):
-#         rnd = np.random.RandomState(0)
-#         r =  Rotation.from_quat(rnd.uniform(size=(5, 4)))
-#         t = torch.arange(7)
-#         Slerp(t, r)
-
-
-# def test_slerp_equal_times():
-#     with pytest.raises(ValueError, match="strictly increasing order"):
-#         rnd = np.random.RandomState(0)
-#         r =  Rotation.from_quat(rnd.uniform(size=(5, 4)))
-#         t = [0, 1, 2, 2, 4]
-#         Slerp(t, r)
-
-
-# def test_slerp_decreasing_times():
-#     with pytest.raises(ValueError, match="strictly increasing order"):
-#         rnd = np.random.RandomState(0)
-#         r =  Rotation.from_quat(rnd.uniform(size=(5, 4)))
-#         t = [0, 1, 3, 2, 4]
-#         Slerp(t, r)
-
-
-# def test_slerp_call_time_dim_mismatch():
-#     rnd = np.random.RandomState(0)
-#     r =  Rotation.from_quat(rnd.uniform(size=(5, 4)))
-#     t = torch.arange(5)
-#     s = Slerp(t, r)
-
-#     with pytest.raises(ValueError,
-#                        match="`times` must be at most 1-dimensional."):
-#         interp_times = torch.tensor([[3.5],
-#                                  [4.2]])
-#         s(interp_times)
-
-
-# def test_slerp_call_time_out_of_range():
-#     rnd = np.random.RandomState(0)
-#     r =  Rotation.from_quat(rnd.uniform(size=(5, 4)))
-#     t = torch.arange(5) + 1
-#     s = Slerp(t, r)
-
-#     with pytest.raises(ValueError, match="times must be within the range"):
-#         s([0, 1, 2])
-#     with pytest.raises(ValueError, match="times must be within the range"):
-#         s([1, 2, 6])
-
-
-# def test_slerp_call_scalar_time():
-#     r =  Rotation.from_euler('X', [0, 80], degrees=True)
-#     s = Slerp([0, 1], r)
-
-#     r_interpolated = s(0.25)
-#     r_interpolated_expected = Rotation.from_euler('X', 20, degrees=True)
-
-#     delta = r_interpolated * r_interpolated_expected.inv()
-
-#     torch.testing.assert_close(delta.magnitude(), 0, atol=1e-16)
 
 
 def test_multiplication_stability():
