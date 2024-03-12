@@ -45,16 +45,16 @@ jobs:
           pytest-coverage-path: ./pytest-coverage.txt
           junitxml-path: ./pytest.xml
 
-      - name: Create the Badge
-        uses: schneegans/dynamic-badges-action@v1.7.0
-        with:
-          auth: ${{ secrets.GIST_SECRET }}
-          gistID: 48e334a10caf60e6708d7c712e56d241
-          filename: coverage.json
-          label: Coverage Report
-          message: ${{ steps.coverageComment.outputs.coverage }}
-          color: ${{ steps.coverageComment.outputs.color }}
-          namedLogo: python
+      # - name: Create the Badge
+      #   uses: schneegans/dynamic-badges-action@v1.7.0
+      #   with:
+      #     auth: ${{ secrets.GIST_SECRET }}
+      #     gistID: 48e334a10caf60e6708d7c712e56d241
+      #     filename: coverage.json
+      #     label: Coverage Report
+      #     message: ${{ steps.coverageComment.outputs.coverage }}
+      #     color: ${{ steps.coverageComment.outputs.color }}
+      #     namedLogo: python
 
       - name: Set pipeline status
         run: |
