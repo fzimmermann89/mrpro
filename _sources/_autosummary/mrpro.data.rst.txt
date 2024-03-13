@@ -1,0 +1,58 @@
+﻿mrpro.data
+==========
+
+.. automodule:: mrpro.data
+
+   
+   
+   
+
+   
+   
+   
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+      :toctree:
+      :template: class_template.rst
+   
+      AcqIdx
+      AcqInfo
+      CsmData
+      Data
+      DcfData
+      EncodingLimits
+      IData
+      IHeader
+      KData
+      KHeader
+      KNoise
+      KTrajectory
+      KTrajectoryRawShape
+      Limits
+      QData
+      QHeader
+      SpatialDimension
+      TrajectoryDescription
+   
+   
+
+   
+   
+   
+
+
+
+.. rubric:: Modules
+
+.. autosummary::
+   :toctree:
+   :template: module_template.rst
+   :recursive:
+
+   mrpro.data.enums
+   mrpro.data.traj_calculators
+
